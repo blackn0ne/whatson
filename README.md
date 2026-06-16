@@ -1,4 +1,6 @@
-# Next.js WhatSaaS
+# whatson
+
+WhatsApp SaaS CRM platform — automation, inbox, teams, and billing.
 
 ## Tech Stack
 
