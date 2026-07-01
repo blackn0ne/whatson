@@ -88,16 +88,23 @@ class WppConnectClient
     }
 
     /**
-     * Start (or resume) the WhatsApp session. Returns the decoded JSON which
-     * contains `status` and, when a scan is required, a base64 `qrcode` data URL.
+     * Start (or resume) the WhatsApp session.
+     *
+     * With `$waitQrCode = false` (default) the call returns quickly after kicking
+     * off Chromium — poll {@see statusSession()} for the QR. Setting wait to true
+     * blocks until the QR is ready and can exceed 60s on a slow VPS.
      *
      * @return array<string, mixed>
      */
-    public function startSession(?string $webhookUrl = null): array
+    public function startSession(?string $webhookUrl = null, bool $waitQrCode = false): array
     {
-        $resp = $this->http()->post($this->url('/start-session'), array_filter([
+        $timeout = $waitQrCode
+            ? (int) config('whatsapp.wppconnect.start_timeout', 120)
+            : $this->timeout;
+
+        $resp = $this->http(timeout: $timeout)->post($this->url('/start-session'), array_filter([
             'webhook' => $webhookUrl,
-            'waitQrCode' => true,
+            'waitQrCode' => $waitQrCode,
         ], fn ($v) => $v !== null));
 
         if (! $resp->successful()) {
@@ -215,9 +222,9 @@ class WppConnectClient
         return $id;
     }
 
-    private function http(bool $auth = true): PendingRequest
+    private function http(bool $auth = true, ?int $timeout = null): PendingRequest
     {
-        $req = Http::timeout($this->timeout)
+        $req = Http::timeout($timeout ?? $this->timeout)
             ->acceptJson()
             ->asJson();
 

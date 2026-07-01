@@ -60,7 +60,9 @@ class WppConnectSetupController extends Controller
             $account->save();
 
             $webhookUrl = route('webhooks.whatsapp.wpp.receive', ['token' => $webhookToken]);
-            $result = $client->startSession($webhookUrl);
+            // Do not wait for the QR here — Chromium startup on a VPS can exceed
+            // 30s. The frontend polls /status and picks up the qrcode field.
+            $client->startSession($webhookUrl, waitQrCode: false);
         } catch (\Throwable $e) {
             $account->delete();
             Log::warning('wppconnect.start.failed', ['error' => $e->getMessage()]);
@@ -70,8 +72,8 @@ class WppConnectSetupController extends Controller
 
         return response()->json([
             'channel_account_id' => $account->id,
-            'status' => $result['status'] ?? 'INITIALIZING',
-            'qrcode' => $result['qrcode'] ?? null,
+            'status' => 'INITIALIZING',
+            'qrcode' => null,
         ]);
     }
 
@@ -86,26 +88,21 @@ class WppConnectSetupController extends Controller
         $client = WppConnectClient::fromChannelAccount($account);
         $status = $client->statusSession();
         $state = strtoupper((string) ($status['status'] ?? 'UNKNOWN'));
-
         $qrcode = $status['qrcode'] ?? null;
 
-        if ($state === 'CONNECTED') {
-            if ($account->status !== 'active') {
-                $account->update(['status' => 'active']);
-            }
-        } elseif (in_array($state, ['QRCODE', 'INITIALIZING', 'PAIRING'], true) && ! $qrcode) {
-            // status-session may not carry the QR — re-issue start-session to fetch it.
+        // Session not running yet — kick it off once (non-blocking) and keep polling.
+        if ($state === 'CLOSED') {
             try {
                 $webhookUrl = route('webhooks.whatsapp.wpp.receive', ['token' => $account->webhook_token]);
-                $result = $client->startSession($webhookUrl);
-                $qrcode = $result['qrcode'] ?? null;
-                $state = strtoupper((string) ($result['status'] ?? $state));
-                if ($state === 'CONNECTED' && $account->status !== 'active') {
-                    $account->update(['status' => 'active']);
-                }
+                $client->startSession($webhookUrl, waitQrCode: false);
+                $state = 'INITIALIZING';
             } catch (\Throwable $e) {
-                Log::debug('wppconnect.status.qr_refresh_failed', ['error' => $e->getMessage()]);
+                Log::debug('wppconnect.status.restart_failed', ['error' => $e->getMessage()]);
             }
+        }
+
+        if ($state === 'CONNECTED' && $account->status !== 'active') {
+            $account->update(['status' => 'active']);
         }
 
         return response()->json([

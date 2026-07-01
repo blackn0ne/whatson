@@ -28,8 +28,12 @@ return [
         // per-session bearer tokens via /api/{session}/{secret}/generate-token.
         'secret_key' => env('WPPCONNECT_SECRET_KEY', ''),
 
-        // HTTP timeout (seconds) for gateway requests.
+        // HTTP timeout (seconds) for routine gateway requests (send, status, …).
         'timeout' => (int) env('WPPCONNECT_TIMEOUT', 30),
+
+        // Only used when start-session is called with waitQrCode=true (not the
+        // default). Chromium + QR on a VPS can take 60–120s.
+        'start_timeout' => (int) env('WPPCONNECT_START_TIMEOUT', 120),
 
         // Verify TLS certificate when calling the gateway. Disable only for local
         // development against a self-signed / plain-HTTP gateway.
