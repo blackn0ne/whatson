@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Modules\Shared\Models\ChannelAccount;
 use App\Modules\Whatsapp\Services\WppConnectClient;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -116,7 +117,7 @@ class WppConnectSetupController extends Controller
      * DELETE /app/whatsapp/setup/wpp/{account}
      * Log the number out and remove the channel account.
      */
-    public function disconnect(Request $request, ChannelAccount $account): JsonResponse
+    public function disconnect(Request $request, ChannelAccount $account): RedirectResponse
     {
         $this->authorizeAccount($request, $account);
 
@@ -130,7 +131,7 @@ class WppConnectSetupController extends Controller
 
         $account->delete();
 
-        return response()->json(['success' => true]);
+        return back()->with('success', 'WhatsApp (unofficial) disconnected.');
     }
 
     private function serverConfigured(): bool

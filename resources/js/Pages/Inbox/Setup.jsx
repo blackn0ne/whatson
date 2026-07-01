@@ -543,10 +543,11 @@ function WabaCard({ waba, webhookGlobalUrl, channelAccounts, chatbots }) {
     );
 }
 
-function WhatsAppSection({ wabas, webhookGlobalUrl, channelAccountsByWaba, chatbots, showForm, setShowForm, metaConfigIdWhatsapp, metaAppId }) {
+function WhatsAppSection({ wabas, wppconnectAccounts = [], webhookGlobalUrl, channelAccountsByWaba, chatbots, showForm, setShowForm, metaConfigIdWhatsapp, metaAppId }) {
     const { t } = useTranslation();
     const [waApiError, setWaApiError] = useState(null);
     const [waSubmitting, setWaSubmitting] = useState(false);
+    const connectedCount = wabas.length + wppconnectAccounts.length;
 
     const handleWaEmbeddedCode = useCallback(async (code, wabaId, phoneNumberId = null) => {
         setWaApiError(null);
@@ -585,9 +586,9 @@ function WhatsAppSection({ wabas, webhookGlobalUrl, channelAccountsByWaba, chatb
             icon={WhatsAppLogo}
             iconBg="bg-white dark:bg-neutral-800 shadow-sm border border-neutral-100 dark:border-neutral-700"
             title={t('inbox.whatsapp_business')}
-            count={wabas.length}
+            count={connectedCount}
         >
-            {wabas.length > 0 && (
+            {(wabas.length > 0 || wppconnectAccounts.length > 0) && (
                 <div className="space-y-3">
                     {wabas.map(waba => (
                         <WabaCard
@@ -598,10 +599,13 @@ function WhatsAppSection({ wabas, webhookGlobalUrl, channelAccountsByWaba, chatb
                             chatbots={chatbots}
                         />
                     ))}
+                    {wppconnectAccounts.map(account => (
+                        <WppAccountRow key={account.id} account={account} chatbots={chatbots} />
+                    ))}
                 </div>
             )}
 
-            {!showForm && wabas.length === 0 && (
+            {!showForm && connectedCount === 0 && (
                 <div className="text-center py-8">
                     <div className="mx-auto mb-3 rounded-2xl w-12 h-12 flex items-center justify-center bg-green-100 dark:bg-green-900/30 opacity-60">
                         <WhatsAppLogo className="h-6 w-6" />
@@ -654,6 +658,68 @@ function WhatsAppSection({ wabas, webhookGlobalUrl, channelAccountsByWaba, chatb
                 </div>
             )}
         </ChannelCard>
+    );
+}
+
+/* Unofficial WhatsApp (WPPConnect / QR) account row on Channel Setup. */
+function WppAccountRow({ account, chatbots }) {
+    const { t } = useTranslation();
+    const [confirmDelete, setConfirmDelete] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+
+    const handleDelete = () => {
+        setDeleting(true);
+        router.delete(route('client.whatsapp.wpp.disconnect', { account: account.id }), {
+            preserveScroll: true,
+            onFinish: () => { setDeleting(false); setConfirmDelete(false); },
+        });
+    };
+
+    return (
+        <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800/60 overflow-hidden">
+            <div className="flex items-start justify-between gap-3 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-semibold text-sm text-neutral-900 dark:text-neutral-100">{account.display_name}</span>
+                        <StatusBadge status={account.status} />
+                        <span className="rounded-full bg-neutral-100 dark:bg-neutral-700 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                            {t('inbox.wpp_unofficial_badge', 'QR / unofficial')}
+                        </span>
+                    </div>
+                    {account.session && (
+                        <div className="font-mono text-xs text-neutral-400 mt-0.5 truncate" title={account.session}>
+                            {t('inbox.wpp_session_label', 'Session')}: {account.session}
+                        </div>
+                    )}
+                    {chatbots.length > 0 && (
+                        <ChatbotSelector
+                            channelAccountId={account.id}
+                            currentChatbotId={account.ai_chatbot_id}
+                            chatbots={chatbots}
+                        />
+                    )}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                    {confirmDelete ? (
+                        <>
+                            <button onClick={handleDelete} disabled={deleting}
+                                className="rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-60 transition">
+                                {deleting ? t('inbox.removing') : t('inbox.confirm')}
+                            </button>
+                            <button onClick={() => setConfirmDelete(false)}
+                                className="rounded-lg border border-neutral-200 dark:border-neutral-600 px-2.5 py-1.5 text-xs text-neutral-600 dark:text-neutral-400 transition">
+                                {t('common.cancel')}
+                            </button>
+                        </>
+                    ) : (
+                        <button onClick={() => setConfirmDelete(true)}
+                            className="rounded-lg border border-red-200 dark:border-red-800 p-1.5 text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 hover:text-red-600 transition">
+                            <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
     );
 }
 
@@ -1227,7 +1293,7 @@ function ConnectDrawer({ open, onClose, title, icon: Icon, iconBg, children }) {
 
 export default function ChannelSetup({
     wabas, whatsappWebhookGlobalUrl,
-    channelAccountsByWaba, instagramAccounts, messengerAccounts, metaWebhookUrl,
+    channelAccountsByWaba, wppconnectAccounts = [], instagramAccounts, messengerAccounts, metaWebhookUrl,
     metaAppId = null, metaConfigIdWhatsapp = null, metaConfigIdSocial = null,
     chatbots = [],
 }) {
@@ -1299,6 +1365,7 @@ export default function ChannelSetup({
                 {/* WhatsApp */}
                 <WhatsAppSection
                     wabas={wabas}
+                    wppconnectAccounts={wppconnectAccounts}
                     webhookGlobalUrl={whatsappWebhookGlobalUrl}
                     channelAccountsByWaba={channelAccountsByWaba ?? {}}
                     chatbots={chatbots}
@@ -1360,7 +1427,7 @@ export default function ChannelSetup({
             </div>
 
             {/* Row 2 — guide + resources (only shown when no channels connected) */}
-            {(wabas.length === 0 && instagramAccounts.length === 0 && messengerAccounts.length === 0) && (
+            {(wabas.length === 0 && wppconnectAccounts.length === 0 && instagramAccounts.length === 0 && messengerAccounts.length === 0) && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {/* Setup guide */}
                 <div className="md:col-span-2 rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-sm overflow-hidden">
@@ -1424,6 +1491,7 @@ export default function ChannelSetup({
                 iconBg="bg-white dark:bg-neutral-800 shadow-sm border border-neutral-100 dark:border-neutral-700">
                 <WhatsAppSection
                     wabas={wabas}
+                    wppconnectAccounts={wppconnectAccounts}
                     webhookGlobalUrl={whatsappWebhookGlobalUrl}
                     channelAccountsByWaba={channelAccountsByWaba ?? {}}
                     chatbots={chatbots}

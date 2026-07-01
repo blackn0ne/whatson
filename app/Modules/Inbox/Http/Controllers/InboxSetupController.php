@@ -58,6 +58,21 @@ class InboxSetupController extends Controller
             ->get(['id', 'display_name', 'status', 'meta_json', 'created_at'])
             ->map(fn ($a) => array_merge($a->toArray(), ['ai_chatbot_id' => $a->meta_json['ai_chatbot_id'] ?? null]));
 
+        // Unofficial WhatsApp numbers (WPPConnect / QR) — not tied to a Meta WABA.
+        $wppconnectAccounts = ChannelAccount::where('workspace_id', $workspaceId)
+            ->where('channel', 'whatsapp')
+            ->where('provider', 'wppconnect')
+            ->orderByDesc('id')
+            ->get(['id', 'phone_number_id', 'display_name', 'status', 'meta_json'])
+            ->map(fn ($a) => [
+                'id'              => $a->id,
+                'display_name'    => $a->display_name,
+                'status'          => $a->status,
+                'session'         => $a->phone_number_id,
+                'ai_chatbot_id'   => $a->meta_json['ai_chatbot_id'] ?? null,
+            ])
+            ->values();
+
         $chatbots = AiChatbot::where('workspace_id', $workspaceId)
             ->where('enabled', true)
             ->get(['id', 'name']);
@@ -76,6 +91,7 @@ class InboxSetupController extends Controller
             'channelAccountsByWaba'        => $channelAccountsByWaba,
             'instagramAccounts'            => $instagramAccounts,
             'messengerAccounts'            => $messengerAccounts,
+            'wppconnectAccounts'           => $wppconnectAccounts,
             'chatbots'                     => $chatbots,
             'metaWebhookUrl'               => $metaWebhookUrl,
             'metaAppId'                    => $metaCreds?->appId() ?: null,
