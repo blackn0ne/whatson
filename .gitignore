@@ -26,3 +26,6 @@ database/.DS_Store
 
 /dist
 /landing
+# Self-hosted WPPConnect Server (not part of this app)
+/wppconnect-server/
+/userDataDir/
