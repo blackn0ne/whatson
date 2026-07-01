@@ -1,0 +1,54 @@
+# rsync filter rules used by scripts/build-release.sh to assemble a clean
+# CodeCanyon distribution. Rules are evaluated top-to-bottom, first match wins.
+#   "+ pattern"  include      "- pattern"  exclude
+# A leading "/" anchors to the package root; no slash matches at any depth.
+
+# --- Keep the .gitignore stub in each runtime dir, drop everything else ---
++ /storage/logs/.gitignore
+- /storage/logs/**
++ /storage/framework/sessions/.gitignore
+- /storage/framework/sessions/**
++ /storage/framework/cache/data/.gitignore
+- /storage/framework/cache/**
++ /storage/framework/views/.gitignore
+- /storage/framework/views/**
++ /storage/framework/testing/.gitignore
+- /storage/framework/testing/**
+- /storage/app/public/media/**
+
+# --- Dependencies & build output (buyer reinstalls per README) ---
+- /node_modules/
+- /vendor/
+- /dist/
+
+# --- Secrets & local environment (only .env.example ships) ---
+- /.env
+- /.env.backup
+- /.env.production
+- .env.*.local
+- /auth.json
+
+# --- VCS / IDE / OS / tooling cruft ---
+- /.git/
+- /.github/
+- /.idea/
+- /.vscode/
+- /.fleet/
+- /.zed/
+- /.nova/
+- .DS_Store
+- /.phpactor.json
+- /.phpunit.result.cache
+- /.phpunit.cache/
+- /Homestead.json
+- /Homestead.yaml
+
+# --- Compiled & runtime caches ---
+- /bootstrap/cache/*.php
+- /public/hot
+- /public/storage
+- *.log
+- npm-debug.log
+- yarn-error.log
+- /database/*.sqlite
+- /database/*.sqlite-journal
