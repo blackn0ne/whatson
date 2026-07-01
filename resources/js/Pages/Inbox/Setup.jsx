@@ -638,6 +638,15 @@ function WhatsAppSection({ wabas, webhookGlobalUrl, channelAccountsByWaba, chatb
                             <span>{t('inbox.meta_app_not_configured')}</span>
                         </div>
                     )}
+
+                    <div className="flex items-center gap-2 py-1">
+                        <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+                        <span className="text-[10px] uppercase tracking-wide text-neutral-400">{t('inbox.or', 'or')}</span>
+                        <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+                    </div>
+
+                    <WppConnectButton />
+
                     <button type="button" onClick={() => setShowForm(false)}
                         className="w-full rounded-lg border border-neutral-300 dark:border-neutral-600 px-4 py-2 text-xs text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition">
                         {t('common.cancel')}
@@ -645,6 +654,117 @@ function WhatsAppSection({ wabas, webhookGlobalUrl, channelAccountsByWaba, chatb
                 </div>
             )}
         </ChannelCard>
+    );
+}
+
+/* Connect a WhatsApp number via the unofficial WPPConnect gateway (QR scan). */
+function WppConnectButton() {
+    const { t } = useTranslation();
+    const [phase, setPhase] = useState('idle'); // idle | starting | qr | connected | error
+    const [qr, setQr] = useState(null);
+    const [error, setError] = useState(null);
+    const [accountId, setAccountId] = useState(null);
+
+    // Poll the session status while a QR is on screen.
+    useEffect(() => {
+        if (phase !== 'qr' || !accountId) return undefined;
+
+        let cancelled = false;
+        const tick = async () => {
+            try {
+                const res = await fetch(route('client.whatsapp.wpp.status', { account: accountId }), {
+                    headers: { Accept: 'application/json' },
+                });
+                const json = await res.json();
+                if (cancelled) return;
+                if (json.qrcode) setQr(json.qrcode);
+                if (json.connected) {
+                    setPhase('connected');
+                    setTimeout(() => router.reload({ preserveScroll: true }), 800);
+                }
+            } catch {
+                /* transient — keep polling */
+            }
+        };
+
+        const id = setInterval(tick, 3000);
+        tick();
+        return () => { cancelled = true; clearInterval(id); };
+    }, [phase, accountId]);
+
+    const start = async () => {
+        setPhase('starting');
+        setError(null);
+        setQr(null);
+        try {
+            const res = await fetch(route('client.whatsapp.wpp.start'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                    Accept: 'application/json',
+                },
+                body: JSON.stringify({}),
+            });
+            const json = await res.json();
+            if (!res.ok) {
+                setError(json.message ?? t('inbox.connection_failed'));
+                setPhase('error');
+                return;
+            }
+            setAccountId(json.channel_account_id);
+            if (json.qrcode) setQr(json.qrcode);
+            setPhase(json.status === 'CONNECTED' ? 'connected' : 'qr');
+            if (json.status === 'CONNECTED') router.reload({ preserveScroll: true });
+        } catch {
+            setError(t('inbox.network_error_retry'));
+            setPhase('error');
+        }
+    };
+
+    if (phase === 'idle' || phase === 'error') {
+        return (
+            <div className="space-y-2">
+                <button
+                    type="button"
+                    onClick={start}
+                    className="w-full rounded-lg bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 px-4 py-2 text-xs font-medium hover:opacity-90 transition"
+                >
+                    {t('inbox.connect_via_qr', 'Connect via QR (no official API)')}
+                </button>
+                <p className="text-[11px] text-neutral-400 leading-relaxed">
+                    {t('inbox.wpp_qr_help', 'Scan a QR with WhatsApp on your phone. Unofficial — higher ban risk, use a dedicated number.')}
+                </p>
+                {error && (
+                    <p className="text-xs text-red-500 flex items-start gap-1.5">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {error}
+                    </p>
+                )}
+            </div>
+        );
+    }
+
+    return (
+        <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3 text-center space-y-2">
+            {phase === 'starting' && (
+                <p className="text-xs text-neutral-500 py-6">{t('inbox.starting_session', 'Starting session…')}</p>
+            )}
+            {phase === 'qr' && (
+                <>
+                    {qr ? (
+                        <img src={qr} alt="WhatsApp QR" className="mx-auto h-48 w-48 rounded-md bg-white p-1" />
+                    ) : (
+                        <p className="text-xs text-neutral-500 py-6">{t('inbox.loading_qr', 'Loading QR…')}</p>
+                    )}
+                    <p className="text-[11px] text-neutral-500 leading-relaxed">
+                        {t('inbox.wpp_scan_steps', 'WhatsApp → Settings → Linked Devices → Link a Device, then scan.')}
+                    </p>
+                </>
+            )}
+            {phase === 'connected' && (
+                <p className="text-xs text-green-600 py-6 font-medium">{t('inbox.connected', 'Connected!')}</p>
+            )}
+        </div>
     );
 }
 

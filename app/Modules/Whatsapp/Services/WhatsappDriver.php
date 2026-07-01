@@ -21,50 +21,59 @@ class WhatsappDriver implements ChannelDriverInterface
 {
     public function __construct(
         private readonly ContactService $contactService,
+        private readonly WhatsappGatewayManager $gateways,
     ) {}
 
     public function send(Message $message): string
     {
         $conversation = $message->conversation;
-        $contact = $conversation->contact;
-        $phone = $contact->phone_e164;
+        $phone = $conversation->contact->phone_e164;
 
-        // Prefer the phone number tied to this conversation's channel account so
-        // outbound replies go from the same number the customer wrote to.
-        $phoneNumberId = $conversation->channelAccount?->phone_number_id;
-        $client = $phoneNumberId
-            ? CloudApiClient::forPhoneNumber($phoneNumberId, $conversation->workspace_id)
-            : null;
-        $client ??= CloudApiClient::forWorkspace($conversation->workspace_id);
-
-        if (! $client) {
-            throw new \RuntimeException('No active WhatsApp account for workspace.');
-        }
+        // Resolve the provider (official Meta vs unofficial WPPConnect) from the
+        // conversation's channel account so replies go out on the same number and
+        // through the same method the customer is connected on.
+        $gateway = $this->gateways->forConversation($conversation);
 
         $payload = $message->payload ?? [];
 
-        $resp = match ($message->type) {
-            'template' => $client->sendTemplate($phone, $payload['template']['name'] ?? '', $payload['template']['language'] ?? 'en', $payload['template']['components'] ?? []),
-            'interactive' => $client->sendInteractive($phone, $payload['interactive'] ?? []),
-            'image' => $client->sendMedia($phone, 'image', $payload['media_id'] ?? '', $payload['caption'] ?? null, null, $payload['link'] ?? null),
-            'video' => $client->sendMedia($phone, 'video', $payload['media_id'] ?? '', $payload['caption'] ?? null, null, $payload['link'] ?? null),
-            'document' => $client->sendMedia($phone, 'document', $payload['media_id'] ?? '', $payload['caption'] ?? null, $payload['filename'] ?? null, $payload['link'] ?? null),
-            'audio' => $client->sendMedia($phone, 'audio', $payload['media_id'] ?? ''),
-            'location' => $client->sendLocation(
+        return match ($message->type) {
+            'template' => $gateway->sendTemplate(
+                $phone,
+                $payload['template']['name'] ?? '',
+                $payload['template']['language'] ?? 'en',
+                $payload['template']['components'] ?? [],
+            ),
+            'interactive' => $gateway->sendInteractive($phone, $payload['interactive'] ?? []),
+            'image' => $gateway->sendMedia($phone, 'image', $this->mediaOpts($payload)),
+            'video' => $gateway->sendMedia($phone, 'video', $this->mediaOpts($payload)),
+            'document' => $gateway->sendMedia($phone, 'document', $this->mediaOpts($payload)),
+            'audio' => $gateway->sendMedia($phone, 'audio', $this->mediaOpts($payload)),
+            'location' => $gateway->sendLocation(
                 $phone,
                 (float) ($payload['location']['latitude'] ?? 0),
                 (float) ($payload['location']['longitude'] ?? 0),
                 $payload['location']['name'] ?? null,
                 $payload['location']['address'] ?? null,
             ),
-            default => $client->sendText($phone, $message->body ?? ''),
+            default => $gateway->sendText($phone, $message->body ?? ''),
         };
+    }
 
-        if (! $resp->successful()) {
-            throw new \RuntimeException('WhatsApp send failed: '.$resp->body());
-        }
-
-        return $resp->json('messages.0.id', '');
+    /**
+     * Normalize a message payload into the media option shape shared by both
+     * providers (Meta uses media_id/link; WPPConnect uses link only).
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array{media_id: string, link: ?string, caption: ?string, filename: ?string}
+     */
+    private function mediaOpts(array $payload): array
+    {
+        return [
+            'media_id' => $payload['media_id'] ?? '',
+            'link' => $payload['link'] ?? null,
+            'caption' => $payload['caption'] ?? null,
+            'filename' => $payload['filename'] ?? null,
+        ];
     }
 
     public function receiveWebhook(Request $request): array
@@ -191,6 +200,185 @@ class WhatsappDriver implements ChannelDriverInterface
     public function verifyCreds(): bool
     {
         return true;
+    }
+
+    /**
+     * Normalize and persist an inbound event coming from a WPPConnect Server
+     * webhook. Produces the same Message / Conversation shape as the Meta path
+     * so the inbox, auto-replies and automations work identically.
+     *
+     * @param  array<string, mixed>  $event  The raw webhook body.
+     */
+    public function processWppConnectInbound(array $event, ChannelAccount $account): ?Message
+    {
+        $eventType = (string) ($event['event'] ?? 'onmessage');
+
+        if (in_array($eventType, ['onack', 'onmessageack'], true)) {
+            $this->processWppConnectAck($event);
+
+            return null;
+        }
+
+        if (! in_array($eventType, ['onmessage', 'message', 'received', 'onselfmessage'], true)) {
+            return null;
+        }
+
+        // Ignore our own outbound echoes, groups, and status broadcasts.
+        if (($event['fromMe'] ?? false) === true || ($eventType === 'onselfmessage')) {
+            return null;
+        }
+        if (($event['isGroupMsg'] ?? false) === true) {
+            return null;
+        }
+        $from = (string) ($event['from'] ?? '');
+        if ($from === '' || str_contains($from, '@g.us') || str_contains($from, 'status@broadcast')) {
+            return null;
+        }
+
+        $msgId = $this->wppMessageId($event['id'] ?? null);
+
+        if ($msgId && ! app(WebhookIdempotencyService::class)->isNewEvent('whatsapp_msg', $msgId)) {
+            $existing = Message::where('provider_message_id', $msgId)->first();
+            if ($existing) {
+                return $existing;
+            }
+
+            throw new \RuntimeException("Duplicate WPPConnect webhook skipped (concurrent): {$msgId}");
+        }
+
+        $workspaceId = (int) $account->workspace_id;
+        $fromDigits = preg_replace('/\D+/', '', $from) ?? $from;
+
+        $contact = $this->contactService->upsert($workspaceId, [
+            'phone_e164' => '+'.$fromDigits,
+            'opt_in_whatsapp' => true,
+            'source' => 'whatsapp_inbound',
+        ]);
+
+        $conversation = Conversation::firstOrCreate(
+            ['workspace_id' => $workspaceId, 'contact_id' => $contact->id, 'channel_account_id' => $account->id],
+            ['status' => 'open', 'external_thread_id' => $fromDigits],
+        );
+
+        $type = $this->mapWppType((string) ($event['type'] ?? 'chat'));
+        $body = $this->wppBody($event, $type);
+
+        $message = Message::create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'in',
+            'channel' => 'whatsapp',
+            'type' => $type,
+            'payload' => $event,
+            'body' => $body,
+            'status' => 'delivered',
+            'provider_message_id' => $msgId,
+            'sent_by' => 'human',
+            'sent_at' => now()->createFromTimestamp((int) ($event['t'] ?? $event['timestamp'] ?? time())),
+        ]);
+
+        $conversation->update([
+            'last_message_at' => $message->sent_at,
+            'status' => 'open',
+            'unread_count' => $conversation->unread_count + 1,
+            'last_inbound_at' => $message->sent_at,
+            'first_response_at' => $conversation->first_response_at && $conversation->last_inbound_at
+                ? ($message->sent_at > $conversation->first_response_at ? null : $conversation->first_response_at)
+                : $conversation->first_response_at,
+        ]);
+
+        MessageReceived::dispatch($message);
+
+        return $message;
+    }
+
+    /** Map a WPPConnect message type to our internal Message.type set. */
+    private function mapWppType(string $type): string
+    {
+        return match (strtolower($type)) {
+            'chat', 'text' => 'text',
+            'image' => 'image',
+            'video' => 'video',
+            'ptt', 'audio' => 'audio',
+            'document' => 'document',
+            'location' => 'location',
+            'sticker' => 'sticker',
+            'vcard', 'multi_vcard' => 'contacts',
+            default => 'unsupported',
+        };
+    }
+
+    /**
+     * Human-readable preview body for a WPPConnect inbound message.
+     *
+     * @param  array<string, mixed>  $event
+     */
+    private function wppBody(array $event, string $type): string
+    {
+        $body = $event['body'] ?? $event['caption'] ?? '';
+        if (is_string($body) && $body !== '' && $type === 'text') {
+            return $body;
+        }
+        // For media the "body" is often base64 data — never store that as preview.
+        $caption = is_string($event['caption'] ?? null) ? $event['caption'] : '';
+        if ($caption !== '') {
+            return $caption;
+        }
+
+        return match ($type) {
+            'image' => '🖼 Image',
+            'video' => '🎬 Video',
+            'audio' => '🎤 Audio',
+            'document' => '📄 '.($event['filename'] ?? 'Document'),
+            'location' => '📍 Location',
+            'sticker' => '😊 Sticker',
+            'contacts' => '👤 Contact',
+            'text' => is_string($body) ? $body : '',
+            default => '',
+        };
+    }
+
+    /** Extract a stable WhatsApp message id from a WPPConnect id field. */
+    private function wppMessageId(mixed $id): ?string
+    {
+        if (is_string($id)) {
+            return $id !== '' ? $id : null;
+        }
+        if (is_array($id)) {
+            $serialized = $id['_serialized'] ?? $id['id'] ?? null;
+
+            return is_string($serialized) && $serialized !== '' ? $serialized : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Handle a WPPConnect delivery ack. ack levels: 1 = sent, 2 = delivered,
+     * 3 = read, -1 = failed. Reuses the Meta status pipeline.
+     *
+     * @param  array<string, mixed>  $event
+     */
+    private function processWppConnectAck(array $event): void
+    {
+        $id = $this->wppMessageId($event['id'] ?? null);
+        if (! $id) {
+            return;
+        }
+
+        $ack = (int) ($event['ack'] ?? 0);
+        $status = match ($ack) {
+            1 => 'sent',
+            2 => 'delivered',
+            3, 4 => 'read',
+            -1 => 'failed',
+            default => null,
+        };
+
+        if ($status === null) {
+            return;
+        }
+
+        $this->processStatusUpdate(['id' => $id, 'status' => $status]);
     }
 
     private function processInboundMessage(array $value, array $msg): Message

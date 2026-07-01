@@ -15,6 +15,7 @@ use App\Modules\Shared\Models\Conversation;
 use App\Modules\Shared\Models\Message;
 use App\Modules\Whatsapp\Models\WhatsappTemplate;
 use App\Modules\Whatsapp\Services\CloudApiClient;
+use App\Modules\Whatsapp\Services\WhatsappGatewayManager;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -151,6 +152,13 @@ class SendCampaignMessageJob implements ShouldQueue
      */
     private function sendWhatsApp(Campaign $campaign, Contact $contact, CampaignPersonalizer $personalizer): array
     {
+        // Unofficial (WPPConnect) numbers cannot send Meta templates — they send
+        // the rendered message as plain text, throttled to reduce ban risk.
+        $account = $this->resolveChannelAccount($campaign);
+        if ($account && $account->isUnofficial()) {
+            return $this->sendWhatsAppUnofficial($campaign, $contact, $personalizer, $account);
+        }
+
         $client = $campaign->whatsapp_phone_number_id
             ? CloudApiClient::forPhoneNumber($campaign->whatsapp_phone_number_id, $campaign->workspace_id)
             : CloudApiClient::forWorkspace($campaign->workspace_id);
@@ -216,6 +224,66 @@ class SendCampaignMessageJob implements ShouldQueue
             'payload' => [
                 'template' => $template,
             ],
+        ];
+    }
+
+    /**
+     * Send a bulk WhatsApp message over an unofficial WPPConnect number.
+     *
+     * There are no Meta templates here, so we send plain text: preferring an
+     * explicit campaign body, otherwise the rendered template BODY text. Sends
+     * are throttled by config('whatsapp.wppconnect.bulk_delay_ms') to lower the
+     * chance of the number being banned for bulk activity.
+     *
+     * @return array{id: string, body: string, type: string, payload: array<string, mixed>}
+     */
+    private function sendWhatsAppUnofficial(
+        Campaign $campaign,
+        Contact $contact,
+        CampaignPersonalizer $personalizer,
+        ChannelAccount $account,
+    ): array {
+        $gateway = app(WhatsappGatewayManager::class)->forChannelAccount($account);
+
+        $phone = $contact->phone_e164;
+        if (! str_starts_with((string) $phone, '+')) {
+            $phone = '+'.$phone;
+        }
+
+        // 1. Prefer an explicit plain-text body if the campaign has one.
+        $text = trim((string) ($campaign->payload_json['body'] ?? ''));
+        if ($text !== '') {
+            $text = $personalizer->renderText($text, $contact);
+        } else {
+            // 2. Otherwise render the template BODY to text.
+            $tpl = $campaign->template_ref ?? [];
+            $name = (string) ($tpl['name'] ?? '');
+            $language = (string) ($tpl['language'] ?? 'en');
+            $rendered = $personalizer->renderTemplateComponents(
+                is_array($tpl['components'] ?? null) ? $tpl['components'] : [],
+                $contact,
+            );
+            $definition = $this->buildTemplateDefinition($campaign, $name, $language, $rendered);
+            $text = $this->summariseTemplateForInbox($name, $rendered, $definition);
+        }
+
+        if (trim($text) === '') {
+            throw new \RuntimeException('WhatsApp (unofficial) message body is empty after personalization.');
+        }
+
+        // Throttle bulk sends on the unofficial channel.
+        $delayMs = (int) config('whatsapp.wppconnect.bulk_delay_ms', 0);
+        if ($delayMs > 0) {
+            usleep($delayMs * 1000);
+        }
+
+        $id = $gateway->sendText($phone, $text);
+
+        return [
+            'id' => $id,
+            'body' => $text,
+            'type' => 'text',
+            'payload' => ['body' => $text],
         ];
     }
 
@@ -578,19 +646,20 @@ class SendCampaignMessageJob implements ShouldQueue
 
     private function resolveChannelAccount(Campaign $campaign): ?ChannelAccount
     {
-        if ($campaign->channel === 'whatsapp') {
-            $client = CloudApiClient::forWorkspace($campaign->workspace_id);
-            $phoneNumberId = $client?->phoneNumberId();
-            if ($phoneNumberId !== null && $phoneNumberId !== '') {
-                $match = ChannelAccount::where('workspace_id', $campaign->workspace_id)
-                    ->where('channel', 'whatsapp')
-                    ->where('phone_number_id', $phoneNumberId)
-                    ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
-                    ->orderBy('id')
-                    ->first();
-                if ($match) {
-                    return $match;
-                }
+        // For WhatsApp, the campaign's chosen sender is stored in
+        // whatsapp_phone_number_id — which is the Meta phone_number_id for
+        // official numbers, or the WPPConnect session name for unofficial ones.
+        // Both are kept in ChannelAccount.phone_number_id, so a single lookup
+        // resolves the right provider account.
+        if ($campaign->channel === 'whatsapp' && ! empty($campaign->whatsapp_phone_number_id)) {
+            $match = ChannelAccount::where('workspace_id', $campaign->workspace_id)
+                ->where('channel', 'whatsapp')
+                ->where('phone_number_id', $campaign->whatsapp_phone_number_id)
+                ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
+                ->orderBy('id')
+                ->first();
+            if ($match) {
+                return $match;
             }
         }
 

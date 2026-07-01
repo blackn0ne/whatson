@@ -175,23 +175,36 @@ class InboxController extends Controller
                     : (str_starts_with($mimeType, 'video/') ? 'video' : 'document');
             }
 
-            // Upload to WhatsApp so we have a media_id for sending
-            $client = CloudApiClient::forWorkspace($conversation->workspace_id);
-            if (! $client) {
-                return response()->json(['error' => 'No active WhatsApp account.'], 422);
-            }
-
-            $mediaId = $client->uploadMedia($file->getRealPath(), $mimeType);
+            // Always keep a local copy for the inbox preview.
             $storedPath = $this->storageManager->prefixedPath('message-media/'.$file->hashName());
             $this->storageManager->disk()->putFileAs(dirname($storedPath), $file, basename($storedPath));
             $previewUrl = $this->storageManager->disk()->url($storedPath);
 
-            $msgPayload = array_merge($msgPayload ?? [], [
-                'media_id' => $mediaId,
-                'preview_url' => $previewUrl,
-                'caption' => $validated['body'] ?? null,
-                'filename' => $file->getClientOriginalName(),
-            ]);
+            if ($conversation->channelAccount?->isUnofficial()) {
+                // Unofficial (WPPConnect) numbers send media by public URL — no
+                // Meta upload, so we hand the gateway the stored file's link.
+                $msgPayload = array_merge($msgPayload ?? [], [
+                    'link' => $previewUrl,
+                    'preview_url' => $previewUrl,
+                    'caption' => $validated['body'] ?? null,
+                    'filename' => $file->getClientOriginalName(),
+                ]);
+            } else {
+                // Official Cloud API: upload to WhatsApp so we have a media_id.
+                $client = CloudApiClient::forWorkspace($conversation->workspace_id);
+                if (! $client) {
+                    return response()->json(['error' => 'No active WhatsApp account.'], 422);
+                }
+
+                $mediaId = $client->uploadMedia($file->getRealPath(), $mimeType);
+
+                $msgPayload = array_merge($msgPayload ?? [], [
+                    'media_id' => $mediaId,
+                    'preview_url' => $previewUrl,
+                    'caption' => $validated['body'] ?? null,
+                    'filename' => $file->getClientOriginalName(),
+                ]);
+            }
 
             // For image/document the 'body' shown in the chat is the caption or filename
             $validated['body'] = $validated['body'] ?? $file->getClientOriginalName();
@@ -202,8 +215,11 @@ class InboxController extends Controller
             return back()->withErrors(['body' => 'Message body is required.']);
         }
 
-        // Enforce 24h window for WhatsApp — templates bypass the window restriction
+        // Enforce 24h window for WhatsApp — templates bypass the window restriction.
+        // The 24h session window is a Meta Cloud API rule; unofficial (WPPConnect)
+        // numbers are not subject to it.
         if ($conversation->channelAccount?->channel === 'whatsapp'
+            && ! $conversation->channelAccount?->isUnofficial()
             && ! $conversation->isWhatsappWindowOpen()
             && $msgType !== 'template') {
             return back()->with('error', 'WhatsApp 24-hour session is closed. Use an approved template to re-engage this contact.');

@@ -18,6 +18,7 @@ use App\Modules\Ecommerce\Http\Controllers\EcommerceOAuthController;
 use App\Modules\Ecommerce\Http\Controllers\EcommerceWebhookController;
 use App\Modules\Inbox\Http\Controllers\MetaWebhookController;
 use App\Modules\Whatsapp\Http\Controllers\WhatsappWebhookController;
+use App\Modules\Whatsapp\Http\Controllers\WppConnectWebhookController;
 use Illuminate\Support\Facades\Route;
 
 // ─── WhatsApp Cloud API ──────────────────────────────────────────────────────
@@ -27,6 +28,10 @@ Route::middleware('throttle:webhooks')->group(function () {
         // Must be declared before /{token} so "global" is not captured as a token.
         Route::get('/global', [WhatsappWebhookController::class, 'verifyGlobal'])->name('global.verify');
         Route::post('/global', [WhatsappWebhookController::class, 'receiveGlobal'])->name('global.receive');
+
+        // Unofficial gateway (WPPConnect Server) inbound events. Declared before
+        // /{token} — its two-segment path never collides with the Meta token route.
+        Route::post('/wpp/{token}', [WppConnectWebhookController::class, 'receive'])->name('wpp.receive');
 
         // Per-WABA token endpoints (used by manually configured WABAs).
         Route::get('/{token}', [WhatsappWebhookController::class, 'verify'])->name('verify');

@@ -5,6 +5,7 @@ use App\Modules\Whatsapp\Http\Controllers\WhatsappEmbeddedSignupController;
 use App\Modules\Whatsapp\Http\Controllers\WhatsappSetupController;
 use App\Modules\Whatsapp\Http\Controllers\WhatsappTemplateController;
 use App\Modules\Whatsapp\Http\Controllers\WhatsappWidgetController;
+use App\Modules\Whatsapp\Http\Controllers\WppConnectSetupController;
 
 use Illuminate\Support\Facades\Route;
 
@@ -21,6 +22,11 @@ Route::middleware(['web', 'client-app'])->prefix('app/whatsapp')->name('client.w
     Route::post('/setup/{waba}/sync-phone-numbers', [WhatsappSetupController::class, 'syncPhoneNumbers'])->name('setup.sync-phone-numbers');
     Route::post('/setup/{waba}/phone/{phoneNumberId}/refresh-status', [WhatsappSetupController::class, 'refreshPhoneStatus'])->name('setup.refresh-phone-status');
     Route::post('/setup/{waba}/phone/{phoneNumberId}/change-name', [WhatsappSetupController::class, 'changeDisplayName'])->name('setup.change-display-name');
+
+    // Unofficial connection via WPPConnect Server (QR code)
+    Route::post('/setup/wpp/start', [WppConnectSetupController::class, 'start'])->name('wpp.start');
+    Route::get('/setup/wpp/{account}/status', [WppConnectSetupController::class, 'status'])->name('wpp.status');
+    Route::delete('/setup/wpp/{account}', [WppConnectSetupController::class, 'disconnect'])->name('wpp.disconnect');
 
     // Templates
     Route::get('/templates', [WhatsappTemplateController::class, 'index'])->name('templates.index');

@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Api\V1;
 use App\Modules\Broadcasting\Services\Sms\SmsDriverManager;
 use App\Modules\Shared\Models\Contact;
 use App\Modules\Shared\Models\Message;
-use App\Modules\Whatsapp\Services\CloudApiClient;
+use App\Modules\Whatsapp\Services\WhatsappGatewayManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -53,15 +53,14 @@ class MessageApiController extends WorkspaceScopedController
 
     private function sendWhatsapp(int $wsId, Contact $contact, array $payload): string
     {
-        $client = CloudApiClient::forWorkspace($wsId);
-        if (! $client) {
-            throw new \RuntimeException('No active WhatsApp channel account for this workspace.');
-        }
-
         $phone = $contact->phone_e164;
         if (! $phone) {
             throw new \RuntimeException('Contact has no E.164 phone number.');
         }
+
+        // Provider-agnostic: routes to the official Meta Cloud API or the
+        // unofficial WPPConnect gateway based on the workspace's WhatsApp account.
+        $gateway = app(WhatsappGatewayManager::class)->forWorkspace($wsId);
 
         if (! empty($payload['template_name'])) {
             $vars = $payload['template_vars'] ?? [];
@@ -72,16 +71,11 @@ class MessageApiController extends WorkspaceScopedController
                     'parameters' => array_map(fn ($v) => ['type' => 'text', 'text' => (string) $v], array_values($vars)),
                 ];
             }
-            $resp = $client->sendTemplate($phone, $payload['template_name'], 'en', $components);
-        } else {
-            $resp = $client->sendText($phone, $payload['body'] ?? '');
+
+            return $gateway->sendTemplate($phone, $payload['template_name'], 'en', $components);
         }
 
-        if (! $resp->successful()) {
-            throw new \RuntimeException('WhatsApp send failed: '.$resp->body());
-        }
-
-        return $resp->json('messages.0.id', '');
+        return $gateway->sendText($phone, $payload['body'] ?? '');
     }
 
     private function sendSms(int $wsId, Contact $contact, array $payload): string

@@ -9,7 +9,7 @@ class ChannelAccount extends Model
 {
     protected $fillable = [
         'workspace_id', 'channel', 'provider', 'credentials',
-        'display_name', 'phone_number_id', 'business_account_id', 'status', 'meta_json',
+        'display_name', 'phone_number_id', 'business_account_id', 'webhook_token', 'status', 'meta_json',
     ];
 
     protected $hidden = ['credentials'];
@@ -25,5 +25,11 @@ class ChannelAccount extends Model
     public function conversations(): HasMany
     {
         return $this->hasMany(Conversation::class);
+    }
+
+    /** True when this account is driven by an unofficial gateway (WPPConnect). */
+    public function isUnofficial(): bool
+    {
+        return $this->provider === 'wppconnect';
     }
 }
