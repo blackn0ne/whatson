@@ -88,11 +88,25 @@ export default function CampaignShow({ campaign, sample = [], reportUrl }) {
         router.post(route('client.campaigns.pause', campaign.uuid), {}, { preserveScroll: true });
 
     const canEdit = ['draft', 'paused'].includes(campaign.status);
+    const needsQueueWorker =
+        ['queued', 'sending'].includes(campaign.status) &&
+        (totals.total ?? 0) === 0 &&
+        !countdown;
 
     return (
         <ClientLayout title={campaign.name}>
             <Head title={t('campaign.show_head_title', { name: campaign.name })} />
             <div className="max-w-4xl space-y-6">
+                {props.flash?.error && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-900/20 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+                        {props.flash.error}
+                    </div>
+                )}
+                {props.flash?.success && (
+                    <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20 px-4 py-3 text-sm text-green-800 dark:text-green-200">
+                        {props.flash.success}
+                    </div>
+                )}
                 <div className="flex flex-wrap items-center gap-3">
                     <Link
                         href={route('client.campaigns.index')}
@@ -143,6 +157,14 @@ export default function CampaignShow({ campaign, sample = [], reportUrl }) {
                                 <Pause className="h-4 w-4" /> {t('campaign.pause')}
                             </button>
                         )}
+                        {campaign.status === 'queued' && (
+                            <button
+                                onClick={handlePause}
+                                className="flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-2 text-sm font-medium text-white hover:bg-orange-600 transition"
+                            >
+                                <Pause className="h-4 w-4" /> {t('campaign.pause')}
+                            </button>
+                        )}
                         {campaign.status === 'paused' && (
                             <button
                                 onClick={handleLaunch}
@@ -155,12 +177,22 @@ export default function CampaignShow({ campaign, sample = [], reportUrl }) {
                 </div>
 
                 {countdown && (
-                    <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-800 dark:text-blue-200">
-                        <Clock className="h-4 w-4" />
-                        <span>
-                            {t('campaign.sending_in')} <span className="font-mono font-semibold">{countdown}</span>
-                            {` (${campaign.timezone || userTz})`}
-                        </span>
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20 px-4 py-3 text-sm text-blue-800 dark:text-blue-200">
+                        <div className="flex items-center gap-2">
+                            <Clock className="h-4 w-4 shrink-0" />
+                            <span>
+                                {t('campaign.sending_in')}{' '}
+                                <span className="font-mono font-semibold">{countdown}</span>
+                                {` (${campaign.timezone || userTz})`}
+                            </span>
+                        </div>
+                        <p className="mt-1 text-xs opacity-80">{t('campaign.scheduled_waiting_hint')}</p>
+                    </div>
+                )}
+
+                {needsQueueWorker && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
+                        {t('campaign.queue_worker_hint')}
                     </div>
                 )}
 

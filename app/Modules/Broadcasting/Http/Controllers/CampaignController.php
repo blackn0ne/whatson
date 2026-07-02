@@ -7,6 +7,7 @@ use App\Modules\Broadcasting\Jobs\LaunchCampaignJob;
 use App\Modules\Broadcasting\Models\Campaign;
 use App\Modules\Broadcasting\Models\CampaignRecipient;
 use App\Modules\Broadcasting\Models\UsageMeter;
+use App\Modules\Broadcasting\Services\CampaignAudienceResolver;
 use App\Modules\Broadcasting\Services\CampaignPersonalizer;
 use App\Modules\Broadcasting\Services\Sms\SmsDriverManager;
 use App\Modules\Shared\Models\ChannelAccount;
@@ -187,31 +188,40 @@ class CampaignController extends Controller
         $this->authorise($request, $campaign);
         abort_unless(in_array($campaign->status, ['draft', 'paused'], true), 422, 'Cannot launch this campaign.');
 
+        if ($campaign->channel === 'whatsapp') {
+            $this->assertWhatsAppCampaignReady($campaign);
+        }
+
+        $audienceCount = app(CampaignAudienceResolver::class)->count($campaign);
+        if ($audienceCount === 0) {
+            return back()->with('error', __('campaign.empty_audience_launch'));
+        }
+
         $patch = ['status' => 'queued'];
 
-        // Only override schedule_at if the request explicitly carries one.
-        // Sending an empty string explicitly means "send immediately now".
         if ($request->has('schedule_at')) {
             $value = $request->input('schedule_at');
             $patch['schedule_at'] = filled($value) ? $value : null;
         }
 
-        if ($campaign->channel === 'whatsapp') {
-            $this->assertWhatsAppCampaignReady($campaign);
-        }
-
         $campaign->update($patch);
         $campaign->refresh();
 
-        // Only kick the job immediately when there is no future schedule.
-        // Future-scheduled campaigns are picked up by LaunchScheduledCampaignsJob.
-        if (! $campaign->schedule_at || $campaign->schedule_at->isPast()) {
+        if ($campaign->schedule_at && $campaign->schedule_at->isFuture()) {
+            LaunchCampaignJob::dispatch($campaign->id)
+                ->onQueue('broadcast')
+                ->delay($campaign->schedule_at);
+        } else {
             LaunchCampaignJob::dispatch($campaign->id)->onQueue('broadcast');
         }
 
         UsageMeter::track($campaign->workspace_id, 'campaigns');
 
-        return back()->with('success', 'Campaign launched.');
+        $message = ($campaign->schedule_at && $campaign->schedule_at->isFuture())
+            ? __('campaign.launch_scheduled', ['count' => $audienceCount])
+            : __('campaign.launch_started', ['count' => $audienceCount]);
+
+        return back()->with('success', $message);
     }
 
     public function pause(Request $request, Campaign $campaign): RedirectResponse

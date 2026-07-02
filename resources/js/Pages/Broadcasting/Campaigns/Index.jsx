@@ -57,6 +57,12 @@ export default function CampaignsIndex({ campaigns, filters }) {
 
     // Auto-refresh while any campaign is actively sending so totals tick up.
     const liveCount = campaigns.data.filter((c) => ['queued', 'sending'].includes(c.status)).length;
+    const stuckQueued = campaigns.data.some(
+        (c) =>
+            ['queued', 'sending'].includes(c.status) &&
+            (c.totals_json?.total ?? 0) === 0 &&
+            (!c.schedule_at || new Date(c.schedule_at) <= Date.now()),
+    );
     useEffect(() => {
         if (liveCount === 0) return;
         const id = setInterval(() => {
@@ -86,6 +92,16 @@ export default function CampaignsIndex({ campaigns, filters }) {
                 {flash.success && (
                     <div className="rounded-lg bg-green-50 dark:bg-green-900/30 text-green-800 dark:text-green-200 px-4 py-2 text-sm">
                         {flash.success}
+                    </div>
+                )}
+                {flash.error && (
+                    <div className="rounded-lg bg-red-50 dark:bg-red-900/30 text-red-800 dark:text-red-200 px-4 py-2 text-sm">
+                        {flash.error}
+                    </div>
+                )}
+                {stuckQueued && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
+                        {t('campaign.queue_worker_hint')}
                     </div>
                 )}
 
@@ -225,6 +241,15 @@ export default function CampaignsIndex({ campaigns, filters }) {
                                                     </button>
                                                 )}
                                                 {c.status === 'sending' && (
+                                                    <button
+                                                        onClick={() => handlePause(c.uuid)}
+                                                        title={t('campaign.pause')}
+                                                        className="text-neutral-400 hover:text-orange-500 transition"
+                                                    >
+                                                        <Pause className="h-4 w-4" />
+                                                    </button>
+                                                )}
+                                                {c.status === 'queued' && (
                                                     <button
                                                         onClick={() => handlePause(c.uuid)}
                                                         title={t('campaign.pause')}
