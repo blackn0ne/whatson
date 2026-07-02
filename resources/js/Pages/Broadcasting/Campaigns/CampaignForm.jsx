@@ -37,6 +37,14 @@ const defaultSendSettings = () => ({
     ...SEND_PRESETS.normal,
 });
 
+const STEPS = [
+    { key: 'broadcast', labelKey: 'campaign.step_broadcast' },
+    { key: 'template', labelKey: 'campaign.step_template' },
+    { key: 'recipients', labelKey: 'campaign.step_recipients' },
+    { key: 'settings', labelKey: 'campaign.step_settings' },
+    { key: 'schedule', labelKey: 'campaign.step_schedule' },
+];
+
 const CHANNEL_META = {
     whatsapp: { label: 'WhatsApp', Icon: (p) => <ChannelBrandIcon channel="whatsapp" {...p} /> },
     sms: { label: 'SMS', Icon: (p) => <ChannelBrandIcon channel="sms" {...p} /> },
@@ -277,6 +285,7 @@ export default function CampaignForm({
 }) {
     const { t } = useTranslation();
     const senders = whatsappSenders.length > 0 ? whatsappSenders : whatsappPhoneNumbers;
+    const [step, setStep] = useState(0);
     const [draftUuid, setDraftUuid] = useState(campaign?.uuid ?? null);
     const [draftStatus, setDraftStatus] = useState(null);
     const [launching, setLaunching] = useState(false);
@@ -455,18 +464,53 @@ export default function CampaignForm({
         }
     };
 
+    const isStepValid = useMemo(() => {
+        if (step === 0) {
+            if (!data.name.trim() || !data.channel) return false;
+            if (data.channel === 'whatsapp') {
+                if (senders.length === 0) return false;
+                if (senders.length > 1 && !data.whatsapp_phone_number_id) return false;
+            }
+            return true;
+        }
+        if (step === 1) {
+            if (data.channel === 'whatsapp') {
+                if (isUnofficialSender) {
+                    const hasBody = (data.payload_json.body || '').trim().length > 0;
+                    const hasMedia = !!(data.payload_json.media_url || '').trim();
+                    return hasBody || hasMedia;
+                }
+                return !!data.template_ref.name;
+            }
+            if (data.channel === 'sms') return (data.payload_json.body || '').trim().length > 0;
+            if (data.channel === 'email') {
+                return (
+                    (data.payload_json.subject || '').trim().length > 0 &&
+                    (data.payload_json.body || '').trim().length > 0
+                );
+            }
+        }
+        if (step === 2) {
+            return !!data.audience_ref;
+        }
+        if (step === 3) {
+            return true;
+        }
+        if (step === 4) {
+            if (data.send_mode === 'scheduled' && !data.schedule_at) return false;
+            return true;
+        }
+        return true;
+    }, [step, data, senders, isUnofficialSender]);
+
     const isFormValid = useMemo(() => {
         if (!data.name.trim() || !data.channel) return false;
-
         if (data.channel === 'whatsapp') {
             if (senders.length === 0) return false;
             if (senders.length > 1 && !data.whatsapp_phone_number_id) return false;
         }
-
         if (!data.audience_ref) return false;
-
         if (data.send_mode === 'scheduled' && !data.schedule_at) return false;
-
         if (data.channel === 'whatsapp') {
             if (isUnofficialSender) {
                 const hasBody = (data.payload_json.body || '').trim().length > 0;
@@ -484,6 +528,14 @@ export default function CampaignForm({
         }
         return true;
     }, [data, senders, isUnofficialSender]);
+
+    const next = async () => {
+        const saved = await saveDraft();
+        if (saved) {
+            setStep((s) => Math.min(s + 1, STEPS.length - 1));
+        }
+    };
+    const prev = () => setStep((s) => Math.max(s - 1, 0));
 
     const handleSendNow = async () => {
         if (!isFormValid) return;
@@ -576,30 +628,99 @@ export default function CampaignForm({
         <form onSubmit={handleSubmit}>
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_22rem]">
                 <div className="space-y-4">
-                    <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-6 space-y-8">
-                        <SetupStep
-                            data={data}
-                            setData={setData}
-                            errors={errors}
-                            senders={senders}
-                            isUnofficialSender={isUnofficialSender}
-                            preview={audiencePreview}
-                            setAudiencePreview={setAudiencePreview}
-                            whatsappTemplates={filteredTemplates}
-                            selectedTemplate={selectedTemplate}
-                            slots={slots}
-                            updateSlot={updateSlot}
-                            contactTokens={contactTokens}
-                            insertTokenIntoTextarea={insertTokenIntoTextarea}
-                            campaignName={data.name}
-                        />
+                    {/* Step indicator */}
+                    <div className="flex flex-wrap items-center gap-2">
+                        {STEPS.map((stepDef, i) => (
+                            <div key={stepDef.key} className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={async () => {
+                                        if (i < step) {
+                                            await saveDraft();
+                                            setStep(i);
+                                        }
+                                    }}
+                                    disabled={i > step}
+                                    className={`h-7 w-7 rounded-full flex items-center justify-center text-xs font-semibold transition ${
+                                        i === step
+                                            ? 'bg-brand-600 text-white ring-2 ring-brand-400 ring-offset-1'
+                                            : i < step
+                                              ? 'bg-brand-500 text-white cursor-pointer hover:ring-2 hover:ring-offset-1 hover:ring-brand-400'
+                                              : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-500'
+                                    }`}
+                                >
+                                    {i < step ? <CheckCircle2 className="h-4 w-4" /> : i + 1}
+                                </button>
+                                <span
+                                    className={`text-xs hidden sm:inline ${
+                                        i === step
+                                            ? 'text-neutral-900 dark:text-neutral-100 font-medium'
+                                            : i < step
+                                              ? 'text-brand-600 dark:text-brand-400'
+                                              : 'text-neutral-400'
+                                    }`}
+                                >
+                                    {t(stepDef.labelKey)}
+                                </span>
+                                {i < STEPS.length - 1 && (
+                                    <div className={`w-4 sm:w-6 h-px ${i < step ? 'bg-brand-400' : 'bg-neutral-300 dark:bg-neutral-600'}`} />
+                                )}
+                            </div>
+                        ))}
+                    </div>
 
-                        <SendSettingsPanel data={data} setData={setData} />
-
-                        <InlineSchedulePanel data={data} setData={setData} errors={errors} />
+                    <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-6">
+                        {step === 0 && (
+                            <ChannelStep
+                                data={data}
+                                setData={setData}
+                                errors={errors}
+                                senders={senders}
+                            />
+                        )}
+                        {step === 1 && (
+                            <ContentStep
+                                data={data}
+                                setData={setData}
+                                whatsappTemplates={filteredTemplates}
+                                selectedTemplate={selectedTemplate}
+                                slots={slots}
+                                updateSlot={updateSlot}
+                                contactTokens={contactTokens}
+                                insertTokenIntoTextarea={insertTokenIntoTextarea}
+                                errors={errors}
+                                campaignName={data.name}
+                                isUnofficialSender={isUnofficialSender}
+                            />
+                        )}
+                        {step === 2 && (
+                            <AudienceStep
+                                data={data}
+                                setData={setData}
+                                preview={audiencePreview}
+                                setAudiencePreview={setAudiencePreview}
+                                errors={errors}
+                            />
+                        )}
+                        {step === 3 && (
+                            <SendSettingsPanel data={data} setData={setData} />
+                        )}
+                        {step === 4 && (
+                            <InlineSchedulePanel data={data} setData={setData} errors={errors} />
+                        )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3">
+                        {step > 0 && (
+                            <button
+                                type="button"
+                                onClick={prev}
+                                className="flex items-center gap-1.5 rounded-lg border border-neutral-300 dark:border-neutral-600 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition"
+                            >
+                                <ArrowLeft className="h-4 w-4" /> {t('common.back')}
+                            </button>
+                        )}
+
                         {draftStatus === 'saving' && (
                             <span className="flex items-center gap-1.5 text-xs text-neutral-400">
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('campaign.saving_draft')}
@@ -616,29 +737,45 @@ export default function CampaignForm({
                             </span>
                         )}
 
-                        <button
-                            type="submit"
-                            disabled={processing || launching}
-                            className="rounded-lg border border-neutral-300 dark:border-neutral-600 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50"
-                        >
-                            {processing ? t('campaign.saving') : mode === 'edit' ? t('campaign.save_changes') : t('campaign.save_draft')}
-                        </button>
-
-                        <button
-                            type="button"
-                            disabled={!isFormValid || launching || processing || draftStatus === 'saving'}
-                            onClick={handleSendNow}
-                            className="ml-auto flex items-center gap-1.5 rounded-lg bg-green-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50 transition"
-                        >
-                            {launching ? (
-                                <><Loader2 className="h-4 w-4 animate-spin" /> {t('campaign.launching')}</>
-                            ) : (
-                                <>
-                                    <Send className="h-4 w-4" />
-                                    {data.send_mode === 'scheduled' ? t('campaign.schedule_send') : t('campaign.send_now')}
-                                </>
-                            )}
-                        </button>
+                        {step < STEPS.length - 1 ? (
+                            <button
+                                type="button"
+                                onClick={next}
+                                disabled={!isStepValid || draftStatus === 'saving'}
+                                className="ml-auto flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50 transition"
+                            >
+                                {draftStatus === 'saving' ? (
+                                    <><Loader2 className="h-4 w-4 animate-spin" /> {t('campaign.saving')}</>
+                                ) : (
+                                    <>{t('common.next')} <ArrowRight className="h-4 w-4" /></>
+                                )}
+                            </button>
+                        ) : (
+                            <>
+                                <button
+                                    type="submit"
+                                    disabled={processing || launching}
+                                    className="rounded-lg border border-neutral-300 dark:border-neutral-600 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50"
+                                >
+                                    {processing ? t('campaign.saving') : mode === 'edit' ? t('campaign.save_changes') : t('campaign.save_draft')}
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={!isFormValid || launching || processing || draftStatus === 'saving'}
+                                    onClick={handleSendNow}
+                                    className="ml-auto flex items-center gap-1.5 rounded-lg bg-green-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50 transition"
+                                >
+                                    {launching ? (
+                                        <><Loader2 className="h-4 w-4 animate-spin" /> {t('campaign.launching')}</>
+                                    ) : (
+                                        <>
+                                            <Send className="h-4 w-4" />
+                                            {data.send_mode === 'scheduled' ? t('campaign.schedule_send') : t('campaign.send_now')}
+                                        </>
+                                    )}
+                                </button>
+                            </>
+                        )}
                     </div>
                 </div>
 
@@ -657,62 +794,6 @@ export default function CampaignForm({
 }
 
 // ─── Step components ──────────────────────────────────────────────────────────
-
-function SetupStep({
-    data,
-    setData,
-    errors,
-    senders,
-    isUnofficialSender,
-    preview,
-    setAudiencePreview,
-    whatsappTemplates,
-    selectedTemplate,
-    slots,
-    updateSlot,
-    contactTokens,
-    insertTokenIntoTextarea,
-    campaignName,
-}) {
-    const { t } = useTranslation();
-
-    return (
-        <div className="space-y-8">
-            <ChannelStep
-                data={data}
-                setData={setData}
-                errors={errors}
-                senders={senders}
-            />
-
-            <div className="border-t border-neutral-200 dark:border-neutral-700 pt-6">
-                <AudienceStep
-                    data={data}
-                    setData={setData}
-                    preview={preview}
-                    setAudiencePreview={setAudiencePreview}
-                    errors={errors}
-                />
-            </div>
-
-            <div className="border-t border-neutral-200 dark:border-neutral-700 pt-6">
-                <ContentStep
-                    data={data}
-                    setData={setData}
-                    whatsappTemplates={whatsappTemplates}
-                    selectedTemplate={selectedTemplate}
-                    slots={slots}
-                    updateSlot={updateSlot}
-                    contactTokens={contactTokens}
-                    insertTokenIntoTextarea={insertTokenIntoTextarea}
-                    errors={errors}
-                    campaignName={campaignName}
-                    isUnofficialSender={isUnofficialSender}
-                />
-            </div>
-        </div>
-    );
-}
 
 function AudiencePhoneUpload({ data, setData, setAudiencePreview }) {
     const { t } = useTranslation();
@@ -1237,7 +1318,7 @@ function SendSettingsPanel({ data, setData }) {
     const mpm = settings.messages_per_minute ?? 30;
 
     return (
-        <div className="border-t border-neutral-200 dark:border-neutral-700 pt-6 space-y-4">
+        <div className="space-y-4">
             <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.send_speed')}</h3>
             <p className="text-sm text-neutral-500">{t('campaign.send_speed_hint')}</p>
 
@@ -1311,8 +1392,8 @@ function InlineSchedulePanel({ data, setData, errors }) {
     const { t } = useTranslation();
 
     return (
-        <div className="border-t border-neutral-200 dark:border-neutral-700 pt-6 space-y-3">
-            <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.when_send')}</h3>
+        <div className="space-y-3">
+            <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.step_schedule')}</h3>
             <div className="flex flex-wrap gap-2">
                 {[
                     ['now', t('campaign.send_now')],
