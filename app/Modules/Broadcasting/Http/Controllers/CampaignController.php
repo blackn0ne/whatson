@@ -822,7 +822,7 @@ class CampaignController extends Controller
 
         foreach ($lines as $line) {
             $line = trim($line);
-            if ($line === '') {
+            if ($line === '' || $line === '...' || preg_match('/^\.+$/', $line)) {
                 continue;
             }
 
@@ -891,7 +891,14 @@ class CampaignController extends Controller
         if (str_starts_with($p, '00')) {
             $p = '+'.substr($p, 2);
         } elseif (! str_starts_with($p, '+') && ctype_digit($p)) {
-            $p = '+'.$p;
+            // Kazakhstan: 8XXXXXXXXXX → +7XXXXXXXXXX
+            if (strlen($p) === 11 && str_starts_with($p, '8')) {
+                $p = '+7'.substr($p, 1);
+            } elseif (strlen($p) === 10 && str_starts_with($p, '7')) {
+                $p = '+'.$p;
+            } else {
+                $p = '+'.$p;
+            }
         }
 
         if (! preg_match('/^\+\d{8,15}$/', $p)) {

@@ -1375,6 +1375,7 @@
         "uploading": "Загрузка…",
         "choose_file": "Выбрать CSV/TXT",
         "upload_failed": "Ошибка загрузки.",
+        "no_phones_entered": "Введите номера телефонов или выберите файл.",
         "contacts_loaded": "Загружено номеров: {{count}}",
         "recipients": "Получатели",
         "recipients_hint": "Вставьте номера или загрузите файл — без сегментов и списков.",

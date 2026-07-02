@@ -39,7 +39,9 @@ class Media extends Model
     {
         $this->ensureDiskConfigured();
 
-        return Storage::disk($this->disk)->url($this->path);
+        $path = Storage::disk($this->disk)->url($this->path);
+
+        return str_starts_with($path, 'http') ? $path : url($path);
     }
 
     public function delete(): bool

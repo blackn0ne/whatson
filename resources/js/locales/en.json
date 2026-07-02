@@ -1375,6 +1375,7 @@
         "uploading": "Uploading…",
         "choose_file": "Choose CSV/TXT file",
         "upload_failed": "Upload failed.",
+        "no_phones_entered": "Enter phone numbers or choose a file.",
         "contacts_loaded": "{{count}} numbers loaded",
         "recipients": "Recipients",
         "recipients_hint": "Paste numbers or upload a file — no segments or lists.",

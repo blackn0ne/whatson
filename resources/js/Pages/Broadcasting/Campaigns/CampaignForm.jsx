@@ -795,14 +795,19 @@ export default function CampaignForm({
 
 // ─── Step components ──────────────────────────────────────────────────────────
 
-function AudiencePhoneUpload({ data, setData, setAudiencePreview }) {
+function AudiencePhoneUpload({ data, setData, setAudiencePreview, preview }) {
     const { t } = useTranslation();
     const [pasteText, setPasteText] = useState('');
     const [uploading, setUploading] = useState(false);
     const [uploadError, setUploadError] = useState('');
+    const [loadedCount, setLoadedCount] = useState(0);
     const fileRef = useRef(null);
 
     const upload = async (phonesText, file) => {
+        if (!phonesText?.trim() && !file) {
+            setUploadError(t('campaign.no_phones_entered'));
+            return;
+        }
         setUploading(true);
         setUploadError('');
         try {
@@ -814,17 +819,24 @@ function AudiencePhoneUpload({ data, setData, setAudiencePreview }) {
             });
             setData('audience_type', 'csv');
             setData('audience_ref', res.data.path);
+            const count = res.data.count ?? 0;
+            setLoadedCount(count);
             setAudiencePreview({
                 loading: false,
-                matched: res.data.count ?? 0,
-                deliverable: res.data.count ?? 0,
+                matched: count,
+                deliverable: count,
                 sample: (res.data.sample ?? []).map((phone) => ({ phone_e164: phone })),
                 error: null,
             });
             setPasteText('');
             if (fileRef.current) fileRef.current.value = '';
         } catch (e) {
-            setUploadError(e?.response?.data?.message ?? t('campaign.upload_failed'));
+            const msg =
+                e?.response?.data?.message ??
+                e?.response?.data?.errors?.phones_text?.[0] ??
+                e?.response?.data?.errors?.file?.[0] ??
+                t('campaign.upload_failed');
+            setUploadError(msg);
         } finally {
             setUploading(false);
         }
@@ -880,10 +892,12 @@ function AudiencePhoneUpload({ data, setData, setAudiencePreview }) {
                     <AlertCircle className="h-3.5 w-3.5" /> {uploadError}
                 </p>
             )}
-            {data.audience_type === 'csv' && data.audience_ref && (
+            {data.audience_ref && (
                 <p className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
                     <CheckCircle2 className="h-3.5 w-3.5" />
-                    {t('campaign.contacts_loaded', { count: preview.deliverable || preview.matched || 0 })}
+                    {t('campaign.contacts_loaded', {
+                        count: loadedCount || preview?.deliverable || preview?.matched || 0,
+                    })}
                 </p>
             )}
         </div>
@@ -1086,6 +1100,7 @@ function AudienceStep({ data, setData, preview, setAudiencePreview, errors }) {
                 data={data}
                 setData={setData}
                 setAudiencePreview={setAudiencePreview}
+                preview={preview}
             />
 
             <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/40 p-3">
