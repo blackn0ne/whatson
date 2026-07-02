@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Client;
 use App\Http\Controllers\Controller;
 use App\Models\ClientSetting;
 use App\Models\Currency;
-use App\Models\Locale;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -17,10 +16,6 @@ class SettingsController extends Controller
     public function index(Request $request): Response
     {
         $user = $request->user();
-        $supportedLocales = Locale::enabled()->orderByRaw('is_default DESC')->orderBy('sort_order')->get(['code', 'name']);
-        if ($supportedLocales->isEmpty()) {
-            $supportedLocales = collect([['code' => 'en', 'name' => 'English']]);
-        }
         $supportedCurrencies = Currency::where('enabled', true)->orderBy('code')->get(['code', 'symbol']);
 
         $client = null;
@@ -39,12 +34,10 @@ class SettingsController extends Controller
 
         return Inertia::render('client/Settings/Index', [
             'preferences' => [
-                'locale' => $user->locale ?? config('app.locale', 'en'),
                 'display_currency' => $user->display_currency ?? 'USD',
                 'theme' => $user->theme ?? 'light',
                 'timezone' => $user->timezone ?? 'Asia/Dhaka',
             ],
-            'supportedLocales' => $supportedLocales->map(fn ($l) => ['code' => $l->code, 'name' => $l->name]),
             'supportedCurrencies' => $supportedCurrencies->map(fn ($c) => ['code' => $c->code, 'name' => $c->code, 'symbol' => $c->symbol ?? $c->code]),
             'client' => $client,
             'digestEnabled' => $user->client_id
@@ -69,11 +62,9 @@ class SettingsController extends Controller
     public function update(Request $request): RedirectResponse
     {
         $user = $request->user();
-        $localeCodes = Locale::enabled()->pluck('code')->all() ?: ['en'];
         $currencyCodes = Currency::where('enabled', true)->pluck('code')->all() ?: ['USD'];
 
         $validated = $request->validate([
-            'locale' => ['nullable', 'string', 'max:16', Rule::in($localeCodes)],
             'display_currency' => ['nullable', 'string', 'max:10', Rule::in($currencyCodes)],
             'theme' => ['nullable', 'string', 'in:light,dark'],
             'timezone' => ['nullable', 'string', 'max:64', 'timezone:all'],
@@ -84,9 +75,6 @@ class SettingsController extends Controller
             'weekly_digest_enabled' => ['nullable', 'boolean'],
         ]);
 
-        if (array_key_exists('locale', $validated) && $validated['locale'] !== null) {
-            $user->locale = $validated['locale'];
-        }
         if (array_key_exists('display_currency', $validated) && $validated['display_currency'] !== null) {
             $user->display_currency = $validated['display_currency'];
         }

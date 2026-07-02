@@ -8,15 +8,15 @@ import Backend from 'i18next-http-backend';
  */
 export function initI18n() {
     const initialLang = typeof document !== 'undefined'
-        ? (document.documentElement.getAttribute('lang') || 'en').split('-')[0]
-        : 'en';
+        ? (document.documentElement.getAttribute('lang') || 'ru').split('-')[0]
+        : 'ru';
 
     i18n
         .use(Backend)
         .use(initReactI18next)
         .init({
             lng: initialLang,
-            fallbackLng: 'en',
+            fallbackLng: 'ru',
             ns: ['translation'],
             defaultNS: 'translation',
             backend: {

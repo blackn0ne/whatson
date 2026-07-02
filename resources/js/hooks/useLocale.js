@@ -10,7 +10,7 @@ import { applyLocaleToDocument } from '@/i18n';
  */
 export function useLocale() {
     const props = usePage().props;
-    const locale = props.i18n?.locale ?? props.locale ?? 'en';
+    const locale = props.i18n?.locale ?? props.locale ?? 'ru';
     const isRtl = props.i18n?.isRtl ?? false;
     const locales = props.i18n?.locales ?? [];
     const rtlLocales = props.rtlLocales ?? ['ar'];

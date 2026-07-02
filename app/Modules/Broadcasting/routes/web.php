@@ -14,6 +14,7 @@ Route::middleware(['web', 'client-app'])->prefix('app/broadcasts')->name('client
     Route::post('/campaigns', [CampaignController::class, 'store'])->name('campaigns.store');
     Route::post('/campaigns/draft', [CampaignController::class, 'storeDraft'])->name('campaigns.store-draft');
     Route::post('/campaigns/audience-preview', [CampaignController::class, 'audiencePreview'])->name('campaigns.audience-preview');
+    Route::post('/campaigns/upload-audience', [CampaignController::class, 'uploadAudience'])->name('campaigns.upload-audience');
     Route::get('/campaigns/{campaign}', [CampaignController::class, 'show'])->name('campaigns.show');
     Route::get('/campaigns/{campaign}/edit', [CampaignController::class, 'edit'])->name('campaigns.edit');
     Route::patch('/campaigns/{campaign}', [CampaignController::class, 'update'])->name('campaigns.update');

@@ -23,10 +23,10 @@ import EmailEditor from '@/Components/EmailEditor';
 import TimezonePicker from '@/Components/TimezonePicker';
 import { DatePicker } from '@/Components/ui';
 
+import TemplatePreview from '@/Components/TemplatePreview';
+
 const STEPS = [
-    { key: 'channel', labelKey: 'campaign.step_channel' },
-    { key: 'audience', labelKey: 'campaign.step_audience' },
-    { key: 'content', labelKey: 'campaign.step_content' },
+    { key: 'setup', labelKey: 'campaign.step_setup' },
     { key: 'schedule', labelKey: 'campaign.step_schedule' },
     { key: 'review', labelKey: 'campaign.step_review' },
 ];
@@ -83,7 +83,7 @@ function defaultInitialData(campaign, userTz) {
         name: '',
         channel: 'whatsapp',
         whatsapp_phone_number_id: '',
-        audience_type: 'segment',
+        audience_type: 'csv',
         audience_ref: '',
         template_ref: { name: '', language: 'en', components: [] },
         payload_json: { subject: '', body: '', from_email: '', from_name: '', reply_to: '', track_opens: true, track_clicks: false },
@@ -243,11 +243,13 @@ export default function CampaignForm({
     mode = 'create',
     whatsappTemplates = [],
     whatsappPhoneNumbers = [],
+    whatsappSenders = [],
     segments = [],
     tags = [],
     contactTokens = [],
 }) {
     const { t } = useTranslation();
+    const senders = whatsappSenders.length > 0 ? whatsappSenders : whatsappPhoneNumbers;
     const [step, setStep] = useState(0);
     const [draftUuid, setDraftUuid] = useState(campaign?.uuid ?? null);
     const [draftStatus, setDraftStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
@@ -264,13 +266,20 @@ export default function CampaignForm({
     const initialData = useMemo(() => defaultInitialData(campaign, userTz), [campaign?.id]);
     const { data, setData, post, patch, processing, errors, transform } = useForm(initialData);
 
+    const selectedSender = useMemo(
+        () => senders.find((s) => s.phone_number_id === data.whatsapp_phone_number_id) ?? null,
+        [senders, data.whatsapp_phone_number_id],
+    );
+    const isUnofficialSender = selectedSender?.provider === 'wppconnect';
+
     // Templates filtered to the selected phone number's WABA.
     const filteredTemplates = useMemo(() => {
         if (data.channel !== 'whatsapp' || !data.whatsapp_phone_number_id) return whatsappTemplates;
-        const phone = whatsappPhoneNumbers.find((p) => p.phone_number_id === data.whatsapp_phone_number_id);
+        if (isUnofficialSender) return whatsappTemplates;
+        const phone = senders.find((p) => p.phone_number_id === data.whatsapp_phone_number_id);
         if (!phone?.waba_id) return whatsappTemplates;
-        return whatsappTemplates.filter((t) => t.waba_id === phone.waba_id);
-    }, [whatsappTemplates, whatsappPhoneNumbers, data.channel, data.whatsapp_phone_number_id]);
+        return whatsappTemplates.filter((tpl) => tpl.waba_id === phone.waba_id);
+    }, [whatsappTemplates, senders, data.channel, data.whatsapp_phone_number_id, isUnofficialSender]);
 
     // The selected WhatsApp template (from the workspace) — used to derive parameter slots.
     const selectedTemplate = useMemo(() => {
@@ -290,13 +299,21 @@ export default function CampaignForm({
 
     // Auto-select the only phone number when switching to WhatsApp with a single number.
     useEffect(() => {
-        if (data.channel === 'whatsapp' && whatsappPhoneNumbers.length === 1 && !data.whatsapp_phone_number_id) {
-            setData('whatsapp_phone_number_id', whatsappPhoneNumbers[0].phone_number_id);
+        if (data.channel === 'whatsapp' && senders.length === 1 && !data.whatsapp_phone_number_id) {
+            setData('whatsapp_phone_number_id', senders[0].phone_number_id);
         }
         if (data.channel !== 'whatsapp' && data.whatsapp_phone_number_id) {
             setData('whatsapp_phone_number_id', '');
         }
     }, [data.channel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        if (data.channel !== 'whatsapp' || !isUnofficialSender || !selectedTemplate) return;
+        const bodyText = pickPreviewText(selectedTemplate.components ?? []);
+        if (bodyText) {
+            setData('payload_json', { ...data.payload_json, body: bodyText });
+        }
+    }, [selectedTemplate?.id, isUnofficialSender, data.channel]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Reset template when the phone number changes (templates are WABA-scoped).
     const prevPhoneRef = useRef(data.whatsapp_phone_number_id);
@@ -346,7 +363,7 @@ export default function CampaignForm({
     const debounceRef = useRef(null);
     useEffect(() => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
-        if (data.audience_type === 'csv') {
+        if (data.audience_type === 'csv' && !data.audience_ref) {
             setAudiencePreview({ loading: false, matched: 0, deliverable: 0, sample: [], error: null });
             return;
         }
@@ -422,20 +439,21 @@ export default function CampaignForm({
     const isStepValid = useMemo(() => {
         if (step === 0) {
             if (!data.name.trim() || !data.channel) return false;
-            // When WhatsApp is selected and there are multiple numbers, one must be chosen.
-            if (data.channel === 'whatsapp' && whatsappPhoneNumbers.length > 1 && !data.whatsapp_phone_number_id) {
+
+            if (data.channel === 'whatsapp') {
+                if (senders.length === 0) return false;
+                if (senders.length > 1 && !data.whatsapp_phone_number_id) return false;
+            }
+
+            if (data.audience_type === 'csv' && !data.audience_ref) return false;
+            if ((data.audience_type === 'segment' || data.audience_type === 'tag') && !data.audience_ref) {
                 return false;
             }
-            return true;
-        }
-        if (step === 1) {
-            if (data.audience_type === 'segment' || data.audience_type === 'tag') {
-                return !!data.audience_ref;
-            }
-            return true;
-        }
-        if (step === 2) {
+
             if (data.channel === 'whatsapp') {
+                if (isUnofficialSender) {
+                    return (data.payload_json.body || '').trim().length > 0;
+                }
                 return !!data.template_ref.name;
             }
             if (data.channel === 'sms') return (data.payload_json.body || '').trim().length > 0;
@@ -447,7 +465,7 @@ export default function CampaignForm({
             }
         }
         return true;
-    }, [step, data]);
+    }, [step, data, senders, isUnofficialSender]);
 
     const handleSubmit = (e) => {
         e.preventDefault();
@@ -556,45 +574,31 @@ export default function CampaignForm({
 
                     <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-6 space-y-4">
                         {step === 0 && (
-                            <ChannelStep
+                            <SetupStep
                                 data={data}
                                 setData={setData}
                                 errors={errors}
-                                whatsappPhoneNumbers={whatsappPhoneNumbers}
-                            />
-                        )}
-
-                        {step === 1 && (
-                            <AudienceStep
-                                data={data}
-                                setData={setData}
+                                senders={senders}
+                                isUnofficialSender={isUnofficialSender}
                                 segments={segments}
                                 tags={tags}
                                 preview={audiencePreview}
-                                errors={errors}
-                            />
-                        )}
-
-                        {step === 2 && (
-                            <ContentStep
-                                data={data}
-                                setData={setData}
+                                setAudiencePreview={setAudiencePreview}
                                 whatsappTemplates={filteredTemplates}
                                 selectedTemplate={selectedTemplate}
                                 slots={slots}
                                 updateSlot={updateSlot}
                                 contactTokens={contactTokens}
                                 insertTokenIntoTextarea={insertTokenIntoTextarea}
-                                errors={errors}
                                 campaignName={data.name}
                             />
                         )}
 
-                        {step === 3 && (
+                        {step === 1 && (
                             <ScheduleStep data={data} setData={setData} errors={errors} />
                         )}
 
-                        {step === 4 && (
+                        {step === 2 && (
                             <ReviewStep
                                 data={data}
                                 preview={audiencePreview}
@@ -605,6 +609,8 @@ export default function CampaignForm({
                                 testTo={testTo}
                                 setTestTo={setTestTo}
                                 sendTest={sendTest}
+                                senders={senders}
+                                isUnofficialSender={isUnofficialSender}
                             />
                         )}
                     </div>
@@ -675,7 +681,8 @@ export default function CampaignForm({
                     slots={slots}
                     contactTokens={contactTokens}
                     audiencePreview={audiencePreview}
-                    whatsappPhoneNumbers={whatsappPhoneNumbers}
+                    senders={senders}
+                    isUnofficialSender={isUnofficialSender}
                 />
             </div>
         </form>
@@ -684,7 +691,162 @@ export default function CampaignForm({
 
 // ─── Step components ──────────────────────────────────────────────────────────
 
-function ChannelStep({ data, setData, errors, whatsappPhoneNumbers = [] }) {
+function SetupStep({
+    data,
+    setData,
+    errors,
+    senders,
+    isUnofficialSender,
+    segments,
+    tags,
+    preview,
+    setAudiencePreview,
+    whatsappTemplates,
+    selectedTemplate,
+    slots,
+    updateSlot,
+    contactTokens,
+    insertTokenIntoTextarea,
+    campaignName,
+}) {
+    const { t } = useTranslation();
+
+    return (
+        <div className="space-y-8">
+            <ChannelStep
+                data={data}
+                setData={setData}
+                errors={errors}
+                senders={senders}
+            />
+
+            <div className="border-t border-neutral-200 dark:border-neutral-700 pt-6">
+                <AudienceStep
+                    data={data}
+                    setData={setData}
+                    segments={segments}
+                    tags={tags}
+                    preview={preview}
+                    setAudiencePreview={setAudiencePreview}
+                    errors={errors}
+                />
+            </div>
+
+            <div className="border-t border-neutral-200 dark:border-neutral-700 pt-6">
+                <ContentStep
+                    data={data}
+                    setData={setData}
+                    whatsappTemplates={whatsappTemplates}
+                    selectedTemplate={selectedTemplate}
+                    slots={slots}
+                    updateSlot={updateSlot}
+                    contactTokens={contactTokens}
+                    insertTokenIntoTextarea={insertTokenIntoTextarea}
+                    errors={errors}
+                    campaignName={campaignName}
+                    isUnofficialSender={isUnofficialSender}
+                />
+            </div>
+        </div>
+    );
+}
+
+function AudiencePhoneUpload({ data, setData, setAudiencePreview }) {
+    const { t } = useTranslation();
+    const [pasteText, setPasteText] = useState('');
+    const [uploading, setUploading] = useState(false);
+    const [uploadError, setUploadError] = useState('');
+    const fileRef = useRef(null);
+
+    const upload = async (phonesText, file) => {
+        setUploading(true);
+        setUploadError('');
+        try {
+            const fd = new FormData();
+            if (file) fd.append('file', file);
+            if (phonesText?.trim()) fd.append('phones_text', phonesText.trim());
+            const res = await axios.post(route('client.campaigns.upload-audience'), fd, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+            });
+            setData('audience_type', 'csv');
+            setData('audience_ref', res.data.path);
+            setAudiencePreview({
+                loading: false,
+                matched: res.data.count ?? 0,
+                deliverable: res.data.count ?? 0,
+                sample: (res.data.sample ?? []).map((phone) => ({ phone_e164: phone })),
+                error: null,
+            });
+            setPasteText('');
+            if (fileRef.current) fileRef.current.value = '';
+        } catch (e) {
+            setUploadError(e?.response?.data?.message ?? t('campaign.upload_failed'));
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    return (
+        <div className="rounded-lg border border-dashed border-neutral-300 dark:border-neutral-600 bg-neutral-50 dark:bg-neutral-800/40 p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-neutral-800 dark:text-neutral-200">
+                <Upload className="h-4 w-4" />
+                {t('campaign.upload_phones')}
+            </div>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                {t('campaign.upload_phones_hint')}
+            </p>
+            <textarea
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                rows={5}
+                placeholder={t('campaign.phones_placeholder')}
+                className={`${inputClass} font-mono text-xs`}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+                <input
+                    ref={fileRef}
+                    type="file"
+                    accept=".csv,.txt"
+                    className="hidden"
+                    onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) upload(pasteText, file);
+                    }}
+                />
+                <button
+                    type="button"
+                    disabled={uploading}
+                    onClick={() => upload(pasteText, fileRef.current?.files?.[0])}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                >
+                    {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                    {uploading ? t('campaign.uploading') : t('campaign.load_contacts')}
+                </button>
+                <button
+                    type="button"
+                    disabled={uploading}
+                    onClick={() => fileRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-300 dark:border-neutral-600 px-3 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                >
+                    {t('campaign.choose_file')}
+                </button>
+            </div>
+            {uploadError && (
+                <p className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                    <AlertCircle className="h-3.5 w-3.5" /> {uploadError}
+                </p>
+            )}
+            {data.audience_type === 'csv' && data.audience_ref && (
+                <p className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    {t('campaign.contacts_loaded', { count: preview.deliverable || preview.matched || 0 })}
+                </p>
+            )}
+        </div>
+    );
+}
+
+function ChannelStep({ data, setData, errors, senders = [] }) {
     const { t } = useTranslation();
     return (
         <>
@@ -729,36 +891,42 @@ function ChannelStep({ data, setData, errors, whatsappPhoneNumbers = [] }) {
                 <FieldError message={errors.channel} />
             </div>
 
-            {data.channel === 'whatsapp' && whatsappPhoneNumbers.length > 0 && (
+            {data.channel === 'whatsapp' && senders.length > 0 && (
                 <div>
                     <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300 block mb-2">
                         {t('campaign.send_from')}
                     </label>
-                    {whatsappPhoneNumbers.length === 1 ? (
-                        <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300">
-                            {whatsappPhoneNumbers[0].display_phone}
-                            {whatsappPhoneNumbers[0].verified_name && (
-                                <span className="ml-2 text-neutral-500 dark:text-neutral-400">
-                                    — {whatsappPhoneNumbers[0].verified_name}
-                                </span>
-                            )}
+                    {senders.length === 1 ? (
+                        <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 px-3 py-2 text-sm text-neutral-700 dark:text-neutral-300 flex items-center justify-between gap-2">
+                            <span>
+                                {senders[0].display_phone}
+                                {senders[0].verified_name && (
+                                    <span className="ml-2 text-neutral-500 dark:text-neutral-400">
+                                        — {senders[0].verified_name}
+                                    </span>
+                                )}
+                            </span>
+                            <SenderBadge provider={senders[0].provider} />
                         </div>
                     ) : (
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                            {whatsappPhoneNumbers.map((p) => {
+                            {senders.map((p) => {
                                 const active = data.whatsapp_phone_number_id === p.phone_number_id;
                                 return (
                                     <button
                                         key={p.phone_number_id}
                                         type="button"
                                         onClick={() => setData('whatsapp_phone_number_id', p.phone_number_id)}
-                                        className={`rounded-xl border p-3 text-sm font-medium transition flex flex-col items-start gap-0.5 text-left ${
+                                        className={`rounded-xl border p-3 text-sm font-medium transition flex flex-col items-start gap-1.5 text-left ${
                                             active
                                                 ? 'border-brand-600 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300'
                                                 : 'border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 hover:border-brand-300'
                                         }`}
                                     >
-                                        <span>{p.display_phone}</span>
+                                        <div className="flex w-full items-start justify-between gap-2">
+                                            <span>{p.display_phone}</span>
+                                            <SenderBadge provider={p.provider} />
+                                        </div>
                                         {p.verified_name && (
                                             <span className="text-xs font-normal text-neutral-500 dark:text-neutral-400">
                                                 {p.verified_name}
@@ -771,6 +939,12 @@ function ChannelStep({ data, setData, errors, whatsappPhoneNumbers = [] }) {
                     )}
                     <FieldError message={errors.whatsapp_phone_number_id} />
                 </div>
+            )}
+
+            {data.channel === 'whatsapp' && senders.length === 0 && (
+                <p className="text-sm text-amber-600 dark:text-amber-400">
+                    {t('campaign.no_whatsapp_senders')}
+                </p>
             )}
 
             {data.channel === 'email' && (
@@ -840,7 +1014,23 @@ function ChannelStep({ data, setData, errors, whatsappPhoneNumbers = [] }) {
     );
 }
 
-function AudienceStep({ data, setData, segments, tags, preview, errors }) {
+function SenderBadge({ provider }) {
+    const { t } = useTranslation();
+    const isQr = provider === 'wppconnect';
+    return (
+        <span
+            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                isQr
+                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                    : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+            }`}
+        >
+            {isQr ? t('campaign.provider_qr') : t('campaign.provider_official')}
+        </span>
+    );
+}
+
+function AudienceStep({ data, setData, segments, tags, preview, setAudiencePreview, errors }) {
     const { t } = useTranslation();
     const channelLabel = CHANNEL_META[data.channel]?.label ?? data.channel;
 
@@ -848,16 +1038,21 @@ function AudienceStep({ data, setData, segments, tags, preview, errors }) {
         <>
             <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.select_audience')}</h3>
 
+            <AudiencePhoneUpload
+                data={data}
+                setData={setData}
+                setAudiencePreview={setAudiencePreview}
+            />
+
             <div>
                 <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300 block mb-2">
-                    {t('campaign.audience_type')}
+                    {t('campaign.or_use_existing')}
                 </label>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                     {[
                         ['segment', t('campaign.audience_segment')],
                         ['tag', t('campaign.audience_tag')],
                         ['contact_list', t('campaign.audience_all_contacts')],
-                        ['csv', t('campaign.audience_csv_upload')],
                     ].map(([val, label]) => (
                         <button
                             key={val}
@@ -910,24 +1105,10 @@ function AudienceStep({ data, setData, segments, tags, preview, errors }) {
                 />
             )}
 
-            {data.audience_type === 'csv' && (
-                <div>
-                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                        {t('campaign.csv_path')}
-                    </label>
-                    <input
-                        type="text"
-                        value={data.audience_ref}
-                        onChange={(e) => setData('audience_ref', e.target.value)}
-                        placeholder="campaigns/imports/abc.csv"
-                        className={inputClass}
-                    />
-                    <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-                        {t('campaign.csv_hint')}
-                        <span className="font-mono"> phone_e164</span> {t('campaign.or')}
-                        <span className="font-mono"> email</span>.
-                    </p>
-                </div>
+            {data.audience_type === 'csv' && data.audience_ref && (
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                    {t('campaign.csv_ready')}
+                </p>
             )}
 
             {/* Audience preview */}
@@ -938,9 +1119,9 @@ function AudienceStep({ data, setData, segments, tags, preview, errors }) {
                 </div>
                 {preview.error ? (
                     <p className="mt-2 text-xs text-red-600 dark:text-red-400">{preview.error}</p>
-                ) : data.audience_type === 'csv' ? (
+                ) : data.audience_type === 'csv' && !data.audience_ref ? (
                     <p className="mt-2 text-xs text-neutral-500">
-                        {t('campaign.csv_no_preview')}
+                        {t('campaign.upload_phones_to_preview')}
                     </p>
                 ) : (
                     <>
@@ -956,7 +1137,8 @@ function AudienceStep({ data, setData, segments, tags, preview, errors }) {
                         {preview.sample.length > 0 && (
                             <div className="mt-2 text-xs text-neutral-500">
                                 {t('campaign.sample')}: {preview.sample
-                                    .map((c) => `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim() || c.phone_e164 || c.email)
+                                    .map((c) => c.phone_e164 || c.email)
+                                    .filter(Boolean)
                                     .join(', ')}
                             </div>
                         )}
@@ -978,13 +1160,73 @@ function ContentStep({
     insertTokenIntoTextarea,
     errors,
     campaignName,
+    isUnofficialSender = false,
 }) {
     const { t } = useTranslation();
     return (
         <>
             <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.message_content')}</h3>
 
-            {data.channel === 'whatsapp' && (
+            {data.channel === 'whatsapp' && isUnofficialSender && (
+                <>
+                    <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                        {t('campaign.unofficial_message_hint')}
+                    </p>
+                    <BodyTextarea
+                        label={t('campaign.whatsapp_message')}
+                        field="body"
+                        value={data.payload_json.body}
+                        onChange={(v) => setData('payload_json', { ...data.payload_json, body: v })}
+                        placeholder={t('campaign.unofficial_body_placeholder')}
+                        rows={6}
+                        contactTokens={contactTokens}
+                        onInsertToken={(token) => insertTokenIntoTextarea('body', token)}
+                        error={errors['payload_json.body']}
+                    />
+                    {whatsappTemplates.length > 0 && (
+                        <div>
+                            <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                                {t('campaign.load_from_template')}
+                            </label>
+                            <select
+                                value={
+                                    whatsappTemplates.find(
+                                        (tpl) =>
+                                            tpl.name === data.template_ref.name &&
+                                            tpl.language === data.template_ref.language,
+                                    )?.id ?? ''
+                                }
+                                onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (!v) return;
+                                    const tpl = whatsappTemplates.find((x) => String(x.id) === v);
+                                    if (tpl) {
+                                        setData('template_ref', {
+                                            ...data.template_ref,
+                                            name: tpl.name,
+                                            language: tpl.language,
+                                        });
+                                        const bodyText = pickPreviewText(tpl.components ?? []);
+                                        if (bodyText) {
+                                            setData('payload_json', { ...data.payload_json, body: bodyText });
+                                        }
+                                    }
+                                }}
+                                className={inputClass}
+                            >
+                                <option value="">{t('campaign.select_template_optional')}</option>
+                                {whatsappTemplates.map((tpl) => (
+                                    <option key={tpl.id} value={tpl.id}>
+                                        {tpl.name} ({tpl.language})
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
+                </>
+            )}
+
+            {data.channel === 'whatsapp' && !isUnofficialSender && (
                 <>
                     <div>
                         <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
@@ -1064,6 +1306,12 @@ function ContentStep({
                         <p className="text-sm text-neutral-500 dark:text-neutral-400">
                             {t('campaign.no_variables')}
                         </p>
+                    )}
+
+                    {selectedTemplate && (
+                        <div className="lg:hidden">
+                            <TemplatePreview components={selectedTemplate.components ?? []} />
+                        </div>
                     )}
                 </>
             )}
@@ -1650,18 +1898,32 @@ function MediaSlotInput({ slot, label, mediaKind, onChange }) {
     );
 }
 
-function PreviewPane({ data, selectedTemplate, slots, contactTokens, audiencePreview, whatsappPhoneNumbers = [] }) {
+function PreviewPane({ data, selectedTemplate, slots, contactTokens, audiencePreview, senders = [], isUnofficialSender = false }) {
     const { t } = useTranslation();
     let content = null;
 
     if (data.channel === 'whatsapp') {
-        const templateBody = pickPreviewText(selectedTemplate?.components ?? []);
-        const rendered = renderPreview(templateBody, slots, contactTokens);
-        content = (
-            <div className="rounded-2xl rounded-tl-none bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-sm text-neutral-800 dark:text-neutral-100 shadow-sm whitespace-pre-line">
-                {rendered || '—'}
-            </div>
-        );
+        if (isUnofficialSender) {
+            content = (
+                <div className="rounded-2xl rounded-tl-none bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-sm text-neutral-800 dark:text-neutral-100 shadow-sm whitespace-pre-line">
+                    {data.payload_json.body || '—'}
+                </div>
+            );
+        } else if (selectedTemplate) {
+            const templateBody = pickPreviewText(selectedTemplate.components ?? []);
+            const rendered = renderPreview(templateBody, slots, contactTokens);
+            content = rendered && rendered !== templateBody ? (
+                <div className="rounded-2xl rounded-tl-none bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-sm text-neutral-800 dark:text-neutral-100 shadow-sm whitespace-pre-line">
+                    {rendered}
+                </div>
+            ) : (
+                <TemplatePreview components={selectedTemplate.components ?? []} />
+            );
+        } else {
+            content = (
+                <div className="text-sm text-neutral-500">—</div>
+            );
+        }
     } else if (data.channel === 'sms') {
         content = (
             <div className="rounded-2xl rounded-tl-none bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-sm text-neutral-800 dark:text-neutral-100 whitespace-pre-line">
@@ -1707,7 +1969,7 @@ function PreviewPane({ data, selectedTemplate, slots, contactTokens, audiencePre
                     </span>
                 </div>
                 {data.channel === 'whatsapp' && data.whatsapp_phone_number_id && (() => {
-                    const p = whatsappPhoneNumbers.find((n) => n.phone_number_id === data.whatsapp_phone_number_id);
+                    const p = senders.find((n) => n.phone_number_id === data.whatsapp_phone_number_id);
                     return p ? (
                         <div className="flex justify-between gap-3">
                             <span className="text-neutral-500">{t('campaign.from')}</span>

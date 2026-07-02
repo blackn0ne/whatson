@@ -8,7 +8,6 @@ import TimezonePicker from '@/Components/TimezonePicker';
 
 export default function ClientSettingsIndex({
     preferences = {},
-    supportedLocales = [],
     supportedCurrencies = [],
     client = null,
     digestEnabled = true,
@@ -16,7 +15,6 @@ export default function ClientSettingsIndex({
     const { t } = useTranslation();
     const { flash = {} } = usePage().props;
     const form = useForm({
-        locale: preferences.locale ?? 'en',
         display_currency: preferences.display_currency ?? 'USD',
         theme: preferences.theme ?? 'light',
         timezone: preferences.timezone ?? browserTz() ?? 'Asia/Dhaka',
@@ -58,20 +56,6 @@ export default function ClientSettingsIndex({
                             {t('client.preferences') || 'Preferences'}
                         </h2>
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                            <div>
-                                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                                    {t('client.language') || 'Language'}
-                                </label>
-                                <select
-                                    value={form.data.locale}
-                                    onChange={e => form.setData('locale', e.target.value)}
-                                    className="w-full rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 px-3 py-2 text-sm"
-                                >
-                                    {supportedLocales.map((l) => (
-                                        <option key={l.code} value={l.code}>{l.name}</option>
-                                    ))}
-                                </select>
-                            </div>
                             <div>
                                 <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
                                     {t('client.display_currency') || 'Display currency'}

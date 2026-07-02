@@ -70,7 +70,7 @@ class HandleInertiaRequests extends Middleware
                     'isRtl' => in_array($locale, ['ar'], true),
                     'locales' => [],
                 ],
-                'supportedLocales' => ['en' => 'English'],
+                'supportedLocales' => ['ru' => 'Русский'],
                 'rtlLocales' => ['ar'],
                 'currencies' => [],
                 'displayCurrency' => 'USD',
@@ -299,7 +299,7 @@ class HandleInertiaRequests extends Middleware
             $supportedLocalesMap[$loc['code']] = $loc['native_name'];
         }
         if (empty($supportedLocalesMap)) {
-            $supportedLocalesMap = ['en' => 'English'];
+            $supportedLocalesMap = ['ru' => 'Русский'];
         }
 
         $unreadNotificationsCount = $user ? $user->unreadNotifications()->count() : 0;

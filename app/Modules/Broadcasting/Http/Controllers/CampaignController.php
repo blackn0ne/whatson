@@ -9,6 +9,7 @@ use App\Modules\Broadcasting\Models\CampaignRecipient;
 use App\Modules\Broadcasting\Models\UsageMeter;
 use App\Modules\Broadcasting\Services\CampaignPersonalizer;
 use App\Modules\Broadcasting\Services\Sms\SmsDriverManager;
+use App\Modules\Shared\Models\ChannelAccount;
 use App\Modules\Shared\Models\Contact;
 use App\Modules\Shared\Models\ContactTag;
 use App\Modules\Shared\Models\Segment;
@@ -16,10 +17,13 @@ use App\Modules\Shared\Services\SegmentResolver;
 use App\Modules\Whatsapp\Models\WhatsappBusinessAccount;
 use App\Modules\Whatsapp\Models\WhatsappTemplate;
 use App\Modules\Whatsapp\Services\CloudApiClient;
+use App\Modules\Whatsapp\Services\WhatsappGatewayManager;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -242,6 +246,16 @@ class CampaignController extends Controller
             'channel' => ['required', 'in:whatsapp,sms,email'],
         ]);
 
+        if ($validated['audience_type'] === 'csv') {
+            $stats = $this->parseCsvAudienceStats($workspaceId, $validated['audience_ref'] ?? null);
+
+            return response()->json([
+                'matched' => $stats['count'],
+                'deliverable' => $stats['count'],
+                'sample' => array_map(fn ($phone) => ['phone_e164' => $phone], $stats['sample']),
+            ]);
+        }
+
         $contactIds = $this->resolveAudienceForPreview(
             $workspaceId,
             $validated['audience_type'],
@@ -273,13 +287,58 @@ class CampaignController extends Controller
 
             $deliverable = $query->count();
             $sample = $query->limit(5)
-                ->get(['id', 'first_name', 'last_name', 'phone_e164', 'email']);
+                ->get(['id', 'phone_e164', 'email']);
         }
 
         return response()->json([
             'matched' => $totalMatched,
             'deliverable' => $deliverable,
             'sample' => $sample,
+        ]);
+    }
+
+    /**
+     * POST /campaigns/upload-audience
+     * Accept pasted phone numbers or a CSV/TXT file and store a campaign import file.
+     */
+    public function uploadAudience(Request $request): JsonResponse
+    {
+        $workspaceId = $this->workspaceId($request);
+
+        $validated = $request->validate([
+            'phones_text' => ['nullable', 'string', 'max:500000'],
+            'file' => ['nullable', 'file', 'mimes:csv,txt', 'max:5120'],
+        ]);
+
+        $phones = [];
+
+        if ($request->hasFile('file')) {
+            $content = (string) file_get_contents($request->file('file')->getRealPath());
+            $phones = $this->parsePhoneLines($content);
+        }
+
+        if (! empty($validated['phones_text'])) {
+            $phones = array_merge($phones, $this->parsePhoneLines($validated['phones_text']));
+        }
+
+        $phones = array_values(array_unique(array_filter($phones)));
+
+        if (empty($phones)) {
+            return response()->json(['message' => 'No valid phone numbers found.'], 422);
+        }
+
+        if (count($phones) > 10000) {
+            return response()->json(['message' => 'Maximum 10,000 phone numbers per upload.'], 422);
+        }
+
+        $path = sprintf('campaigns/imports/%d/%s.csv', $workspaceId, Str::uuid());
+        $csv = "phone_e164\n".implode("\n", $phones);
+        Storage::put($path, $csv);
+
+        return response()->json([
+            'path' => $path,
+            'count' => count($phones),
+            'sample' => array_slice($phones, 0, 5),
         ]);
     }
 
@@ -390,6 +449,23 @@ class CampaignController extends Controller
      */
     private function assertWhatsAppCampaignReady(Campaign $campaign): void
     {
+        $account = $this->resolveWhatsAppChannelAccount($campaign);
+
+        if ($account && $account->isUnofficial()) {
+            if ($account->status !== 'active') {
+                abort(422, 'WhatsApp QR session is not connected. Reconnect on Channel Setup.');
+            }
+
+            $body = trim((string) ($campaign->payload_json['body'] ?? ''));
+            $tplName = (string) ($campaign->template_ref['name'] ?? '');
+
+            if ($body === '' && $tplName === '') {
+                abort(422, 'Enter a message body before launching.');
+            }
+
+            return;
+        }
+
         $client = $campaign->whatsapp_phone_number_id
             ? CloudApiClient::forPhoneNumber($campaign->whatsapp_phone_number_id, $campaign->workspace_id)
             : CloudApiClient::forWorkspace($campaign->workspace_id);
@@ -448,12 +524,31 @@ class CampaignController extends Controller
                 'display_phone'   => $p->display_phone,
                 'verified_name'   => $p->verified_name,
                 'waba_id'         => $waba->waba_id,
+                'provider'        => 'meta',
             ]))
             ->values();
+
+        $wppconnectSenders = ChannelAccount::where('workspace_id', $workspaceId)
+            ->where('channel', 'whatsapp')
+            ->where('provider', 'wppconnect')
+            ->orderByDesc('id')
+            ->get(['phone_number_id', 'display_name', 'status'])
+            ->map(fn ($a) => [
+                'phone_number_id' => $a->phone_number_id,
+                'display_phone'   => $a->display_name ?: $a->phone_number_id,
+                'verified_name'   => null,
+                'waba_id'         => null,
+                'provider'        => 'wppconnect',
+                'status'          => $a->status,
+            ])
+            ->values();
+
+        $whatsappSenders = $whatsappPhoneNumbers->concat($wppconnectSenders)->values();
 
         return [
             'whatsappTemplates'    => $whatsappTemplates,
             'whatsappPhoneNumbers' => $whatsappPhoneNumbers,
+            'whatsappSenders'      => $whatsappSenders,
             'segments'             => $segments,
             'tags'                 => $tags,
             'contactTokens'        => CampaignPersonalizer::availableContactTokens(),
@@ -512,6 +607,36 @@ class CampaignController extends Controller
             throw new \RuntimeException('Phone is required for a WhatsApp test send.');
         }
 
+        $phone = $contact->phone_e164;
+        if (! str_starts_with($phone, '+')) {
+            $phone = '+'.$phone;
+        }
+
+        $account = $this->resolveWhatsAppChannelAccount($campaign);
+
+        if ($account && $account->isUnofficial()) {
+            $text = trim((string) ($campaign->payload_json['body'] ?? ''));
+            if ($text !== '') {
+                $text = $personalizer->renderText($text, $contact);
+            } else {
+                $tpl = $campaign->template_ref ?? [];
+                $rendered = $personalizer->renderTemplateComponents(
+                    is_array($tpl['components'] ?? null) ? $tpl['components'] : [],
+                    $contact,
+                );
+                $bodyComp = collect($rendered)->first(fn ($c) => ($c['type'] ?? '') === 'body');
+                $text = trim((string) ($bodyComp['parameters'][0]['text'] ?? ''));
+            }
+
+            if ($text === '') {
+                throw new \RuntimeException('Message body is empty.');
+            }
+
+            $gateway = app(WhatsappGatewayManager::class)->forChannelAccount($account);
+
+            return $gateway->sendText($phone, $text);
+        }
+
         $client = $campaign->whatsapp_phone_number_id
             ? CloudApiClient::forPhoneNumber($campaign->whatsapp_phone_number_id, $campaign->workspace_id)
             : CloudApiClient::forWorkspace($campaign->workspace_id);
@@ -526,11 +651,6 @@ class CampaignController extends Controller
 
         if ($name === '') {
             throw new \RuntimeException('Pick a WhatsApp template before sending a test.');
-        }
-
-        $phone = $contact->phone_e164;
-        if (! str_starts_with($phone, '+')) {
-            $phone = '+'.$phone;
         }
 
         $rendered = $personalizer->renderTemplateComponents($components, $contact);
@@ -597,5 +717,133 @@ class CampaignController extends Controller
         }
 
         return 'email-test:'.uniqid();
+    }
+
+    private function resolveWhatsAppChannelAccount(Campaign $campaign): ?ChannelAccount
+    {
+        if ($campaign->channel !== 'whatsapp' || empty($campaign->whatsapp_phone_number_id)) {
+            return null;
+        }
+
+        return ChannelAccount::where('workspace_id', $campaign->workspace_id)
+            ->where('channel', 'whatsapp')
+            ->where('phone_number_id', $campaign->whatsapp_phone_number_id)
+            ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
+            ->orderBy('id')
+            ->first();
+    }
+
+    /**
+     * @return array{count: int, sample: array<int, string>}
+     */
+    private function parseCsvAudienceStats(int $workspaceId, ?string $path): array
+    {
+        if (
+            ! $path
+            || str_contains($path, '..')
+            || str_starts_with($path, '/')
+            || str_starts_with($path, '\\')
+            || ! str_starts_with($path, 'campaigns/imports/'.$workspaceId.'/')
+            || ! Storage::exists($path)
+        ) {
+            return ['count' => 0, 'sample' => []];
+        }
+
+        $phones = $this->parsePhoneLines((string) Storage::get($path));
+
+        return [
+            'count' => count($phones),
+            'sample' => array_slice($phones, 0, 5),
+        ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function parsePhoneLines(string $content): array
+    {
+        $phones = [];
+        $lines = preg_split('/\r\n|\r|\n/', $content) ?: [];
+        $header = null;
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            $candidate = $line;
+
+            if (str_contains($line, ',')) {
+                $parts = array_map('trim', str_getcsv($line));
+
+                if ($header === null && $this->looksLikeCsvHeader($parts)) {
+                    $header = array_map('strtolower', $parts);
+
+                    continue;
+                }
+
+                if ($header !== null) {
+                    $idx = $this->phoneColumnIndex($header);
+                    $candidate = (string) ($parts[$idx] ?? $parts[0] ?? '');
+                } else {
+                    $candidate = (string) ($parts[0] ?? '');
+                }
+            }
+
+            $normalized = $this->normalizePhone($candidate);
+            if ($normalized) {
+                $phones[] = $normalized;
+            }
+        }
+
+        return array_values(array_unique($phones));
+    }
+
+    private function looksLikeCsvHeader(array $parts): bool
+    {
+        foreach ($parts as $part) {
+            if (preg_match('/phone/i', (string) $part)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function phoneColumnIndex(array $header): int
+    {
+        foreach ($header as $i => $col) {
+            if (preg_match('/phone/i', (string) $col)) {
+                return $i;
+            }
+        }
+
+        return 0;
+    }
+
+    private function normalizePhone(string $raw): ?string
+    {
+        $raw = trim($raw);
+        if ($raw === '' || preg_match('/phone/i', $raw)) {
+            return null;
+        }
+
+        $p = preg_replace('/[\s\-().]/', '', $raw);
+        if ($p === '') {
+            return null;
+        }
+
+        if (str_starts_with($p, '00')) {
+            $p = '+'.substr($p, 2);
+        } elseif (! str_starts_with($p, '+') && ctype_digit($p)) {
+            $p = '+'.$p;
+        }
+
+        if (! preg_match('/^\+\d{8,15}$/', $p)) {
+            return null;
+        }
+
+        return $p;
     }
 }

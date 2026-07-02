@@ -19,14 +19,14 @@ class SetLocale
             $enabledCodes = Locale::enabled()->pluck('code')->all();
             $defaultCode = Locale::defaultCode();
         } catch (\Throwable $e) {
-            $enabledCodes = ['en'];
-            $defaultCode = 'en';
+            $enabledCodes = ['ru'];
+            $defaultCode = 'ru';
         }
         if (empty($enabledCodes)) {
-            $enabledCodes = ['en'];
+            $enabledCodes = ['ru'];
         }
         if (! in_array($defaultCode, $enabledCodes, true)) {
-            $defaultCode = $enabledCodes[0] ?? 'en';
+            $defaultCode = $enabledCodes[0] ?? 'ru';
         }
 
         $locale = $defaultCode;

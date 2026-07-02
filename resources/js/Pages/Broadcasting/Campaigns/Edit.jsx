@@ -17,6 +17,7 @@ export default function CampaignEdit({
     campaign,
     whatsappTemplates = [],
     whatsappPhoneNumbers = [],
+    whatsappSenders = [],
     segments = [],
     tags = [],
     contactTokens = [],
@@ -46,6 +47,7 @@ export default function CampaignEdit({
                     campaign={campaign}
                     whatsappTemplates={whatsappTemplates}
                     whatsappPhoneNumbers={whatsappPhoneNumbers}
+                    whatsappSenders={whatsappSenders}
                     segments={segments}
                     tags={tags}
                     contactTokens={contactTokens}

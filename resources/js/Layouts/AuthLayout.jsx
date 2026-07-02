@@ -1,7 +1,6 @@
 import { Link } from '@inertiajs/react';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '@/context/ThemeContext';
-import { useLocale } from '@/hooks/useLocale';
 import ApplicationLogo from '@/Components/ApplicationLogo';
 import { Sun, Moon, ShieldCheck, Zap, Users, Bot, TrendingUp, Clock, Star } from 'lucide-react';
 
@@ -171,27 +170,6 @@ function ThemeToggle() {
     );
 }
 
-function LocaleToggle() {
-    const { locale, locales, setLocale } = useLocale();
-    if (locales.length <= 1) return null;
-
-    return (
-        <div className="relative">
-            <select
-                value={locale}
-                onChange={(e) => setLocale(e.target.value)}
-                className="h-8 rounded-soft border border-neutral-200 dark:border-neutral-700 bg-transparent px-2 text-xs text-neutral-500 dark:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
-            >
-                {locales.map((l) => (
-                    <option key={l.code} value={l.code}>
-                        {l.native_name || l.name || l.code.toUpperCase()}
-                    </option>
-                ))}
-            </select>
-        </div>
-    );
-}
-
 export default function AuthLayout({
     variant = 'client',
     title,
@@ -218,7 +196,6 @@ export default function AuthLayout({
                     </Link>
                     <span className="hidden lg:block" />
                     <div className="flex items-center gap-2">
-                        <LocaleToggle />
                         <ThemeToggle />
                     </div>
                 </div>

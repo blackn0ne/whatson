@@ -7,6 +7,7 @@ import CampaignForm from './CampaignForm';
 export default function CampaignWizard({
     whatsappTemplates = [],
     whatsappPhoneNumbers = [],
+    whatsappSenders = [],
     segments = [],
     tags = [],
     contactTokens = [],
@@ -32,6 +33,7 @@ export default function CampaignWizard({
                     mode="create"
                     whatsappTemplates={whatsappTemplates}
                     whatsappPhoneNumbers={whatsappPhoneNumbers}
+                    whatsappSenders={whatsappSenders}
                     segments={segments}
                     tags={tags}
                     contactTokens={contactTokens}

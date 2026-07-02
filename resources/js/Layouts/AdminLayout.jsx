@@ -143,7 +143,6 @@ export default function AdminLayout({ title = 'Admin', header, children }) {
                     showLogo={false}
                     title={title}
                     showWorkspace={false}
-                    showLocale={false}
                     showCurrency={false}
                     showAccount={false}
                 />

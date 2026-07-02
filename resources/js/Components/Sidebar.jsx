@@ -82,7 +82,7 @@ function NavLink({ item, onClose, showLabel = true, compact = false, className =
                 rel="noopener noreferrer"
                 onClick={onClose}
                 className={classes}
-                title={compact ? item.label : undefined}
+                aria-label={compact ? item.label : undefined}
             >
                 {content}
             </a>
@@ -94,7 +94,7 @@ function NavLink({ item, onClose, showLabel = true, compact = false, className =
             href={href}
             onClick={onClose}
             className={classes}
-            title={compact ? item.label : undefined}
+            aria-label={compact ? item.label : undefined}
         >
             {content}
         </Link>
@@ -131,7 +131,6 @@ function NavRailIcon({ group, onClose }) {
                 rel="noopener noreferrer"
                 onClick={onClose}
                 className={classes}
-                title={group.label}
                 aria-label={group.label}
             >
                 {inner}
@@ -144,7 +143,6 @@ function NavRailIcon({ group, onClose }) {
             href={href}
             onClick={onClose}
             className={classes}
-            title={group.label}
             aria-label={group.label}
         >
             {inner}
@@ -153,12 +151,16 @@ function NavRailIcon({ group, onClose }) {
 }
 
 function NavGroupExpanded({ label, items, onClose }) {
+    const showHeader = items.length > 1;
+
     return (
         <div className="mb-1">
-            <div className="px-3 py-1.5 mt-2 text-[10px] font-bold uppercase tracking-widest text-white/55 select-none truncate">
-                {label}
-            </div>
-            <div className="mt-0.5 space-y-0.5">
+            {showHeader && (
+                <div className="px-3 py-1.5 mt-2 text-[10px] font-bold uppercase tracking-widest text-white/55 select-none truncate">
+                    {label}
+                </div>
+            )}
+            <div className={`space-y-0.5 ${showHeader ? 'mt-0.5' : 'mt-1'}`}>
                 {items.map((item, i) => (
                     <NavLink
                         key={item.key ?? item.route ?? item.href ?? i}
@@ -240,7 +242,7 @@ function SidebarPanel({
                     <button
                         type="button"
                         className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 transition duration-150 lg:h-10 lg:w-10 lg:p-0 lg:group-hover/sidebar:h-auto lg:group-hover/sidebar:w-full lg:group-hover/sidebar:px-3 lg:group-hover/sidebar:py-2"
-                        title={t('common.create')}
+                        aria-label={t('common.create')}
                     >
                         <Plus className="h-4 w-4 shrink-0" />
                         <span className={miniRail && !mobile ? 'hidden lg:group-hover/sidebar:inline' : ''}>
@@ -336,9 +338,9 @@ export default function Sidebar({
             {/* Desktop: mini rail, expands on hover */}
             <div
                 className={[
-                    'hidden lg:fixed lg:inset-y-0 lg:z-30 lg:left-0 lg:flex lg:flex-col rtl:lg:left-auto rtl:lg:right-0',
+                    'hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-40 lg:flex lg:flex-col rtl:lg:left-auto rtl:lg:right-0',
                     miniRail
-                        ? 'group/sidebar lg:w-16 lg:hover:w-64 lg:transition-[width] lg:duration-200 lg:ease-out lg:overflow-hidden lg:hover:shadow-2xl'
+                        ? 'group/sidebar lg:w-16 lg:hover:z-50 lg:hover:w-64 lg:transition-[width] lg:duration-200 lg:ease-out lg:overflow-y-auto lg:overflow-x-hidden lg:hover:shadow-2xl'
                         : 'lg:w-64',
                 ].join(' ')}
             >

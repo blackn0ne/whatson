@@ -3,8 +3,6 @@ import { Link, router, usePage } from '@inertiajs/react';
 import { useTranslation } from 'react-i18next';
 import { Dropdown } from '@/Components/ui';
 import { useTheme } from '@/context/ThemeContext';
-import { useLocale } from '@/hooks/useLocale';
-import { Globe } from 'lucide-react';
 
 function SunIcon({ className }) {
     return (
@@ -52,9 +50,6 @@ export default function LandingLayout({ children }) {
     const page = usePage();
     const auth = page.props.auth;
     const { theme, setTheme } = useTheme();
-    const { locale: currentLocale, setLocale } = useLocale();
-    const supportedLocales = page.props.supportedLocales ?? { en: 'English' };
-    const localeEntries = Object.entries(supportedLocales);
     const appName = import.meta.env.VITE_APP_NAME || 'WhatsMine';
     const [mobileOpen, setMobileOpen] = useState(false);
     const landing = page.props.landing ?? {};
@@ -113,37 +108,6 @@ export default function LandingLayout({ children }) {
                         >
                             {theme === 'dark' ? <SunIcon className="h-5 w-5" /> : <MoonIcon className="h-5 w-5" />}
                         </button>
-
-                        {/* Locale */}
-                        {localeEntries.length > 1 && (
-                            <Dropdown>
-                                <Dropdown.Trigger>
-                                    <button
-                                        type="button"
-                                        className="hidden sm:flex items-center gap-1.5 rounded-soft px-2.5 py-1.5 text-sm text-white/70 hover:text-white hover:bg-white/10 transition duration-150"
-                                        aria-label={t('topbar.language')}
-                                    >
-                                        <Globe className="h-4 w-4" />
-                                        <span>{currentLocale.toUpperCase()}</span>
-                                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                        </svg>
-                                    </button>
-                                </Dropdown.Trigger>
-                                <Dropdown.Content align="right" width="48">
-                                    {localeEntries.map(([code, label]) => (
-                                        <Dropdown.Item
-                                            key={code}
-                                            as="button"
-                                            onClick={() => setLocale(code)}
-                                            className={currentLocale === code ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300 font-medium' : ''}
-                                        >
-                                            {label}
-                                        </Dropdown.Item>
-                                    ))}
-                                </Dropdown.Content>
-                            </Dropdown>
-                        )}
 
                         {/* Auth links — desktop */}
                         <div className="hidden sm:flex items-center gap-1 ms-1 ps-2 border-l border-white/20">

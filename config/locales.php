@@ -9,9 +9,7 @@ return [
     | Key = locale code, value = display name (for UI).
     */
     'supported' => [
-        'en' => 'English',
-        'bn' => 'বাংলা',
-        'ar' => 'العربية',
+        'ru' => 'Русский',
     ],
 
     /*
@@ -27,6 +25,6 @@ return [
     | Fallback locale
     |--------------------------------------------------------------------------
     */
-    'fallback' => env('APP_LOCALE', 'en'),
+    'fallback' => env('APP_LOCALE', 'ru'),
 
 ];
