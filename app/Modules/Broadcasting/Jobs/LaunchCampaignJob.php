@@ -5,6 +5,7 @@ namespace App\Modules\Broadcasting\Jobs;
 use App\Modules\Broadcasting\Models\Campaign;
 use App\Modules\Broadcasting\Models\CampaignRecipient;
 use App\Modules\Broadcasting\Services\CampaignAudienceResolver;
+use App\Modules\Broadcasting\Services\CampaignSendSettings;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -50,11 +51,15 @@ class LaunchCampaignJob implements ShouldQueue
             return;
         }
 
+        $sendSettings = CampaignSendSettings::resolve($campaign->payload_json);
+        $chunkSize = $sendSettings['chunk_size'];
+        $chunkPause = $sendSettings['chunk_pause_seconds'];
+
         $now = now();
         $totalChunks = 0;
         $totalNewContacts = 0;
 
-        collect($contactIds)->chunk(1000)->each(function ($chunk, $i) use ($campaign, $now, &$totalChunks, &$totalNewContacts) {
+        collect($contactIds)->chunk($chunkSize)->each(function ($chunk, $i) use ($campaign, $now, $chunkPause, &$totalChunks, &$totalNewContacts) {
             $rows = $chunk->map(fn ($contactId) => [
                 'campaign_id' => $campaign->id,
                 'contact_id' => $contactId,
@@ -81,7 +86,7 @@ class LaunchCampaignJob implements ShouldQueue
 
             DispatchCampaignChunkJob::dispatch($campaign->id, $queuedContactIds)
                 ->onQueue('broadcast')
-                ->delay(now()->addSeconds($i * 5));
+                ->delay(now()->addSeconds($i * max(1, $chunkPause)));
         });
 
         if ($totalNewContacts === 0) {
@@ -90,7 +95,7 @@ class LaunchCampaignJob implements ShouldQueue
             return;
         }
 
-        $finalDelay = max(60, $totalChunks * 5 + 60);
+        $finalDelay = max(60, $totalChunks * max(1, $chunkPause) + 60);
         FinalizeCampaignJob::dispatch($campaign->id)
             ->onQueue('broadcast')
             ->delay(now()->addSeconds($finalDelay));

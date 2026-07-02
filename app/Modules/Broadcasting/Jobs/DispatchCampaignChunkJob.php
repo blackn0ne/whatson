@@ -3,6 +3,7 @@
 namespace App\Modules\Broadcasting\Jobs;
 
 use App\Modules\Broadcasting\Models\Campaign;
+use App\Modules\Broadcasting\Services\CampaignSendSettings;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -27,10 +28,12 @@ class DispatchCampaignChunkJob implements ShouldQueue
             return;
         }
 
+        $delayMs = CampaignSendSettings::resolve($campaign->payload_json)['delay_ms'];
+
         foreach ($this->contactIds as $i => $contactId) {
             SendCampaignMessageJob::dispatch($campaign->id, $contactId)
                 ->onQueue('broadcast')
-                ->delay(now()->addMilliseconds($i * 100)); // 10 msgs/second rate limit
+                ->delay(now()->addMilliseconds($i * $delayMs));
         }
     }
 }

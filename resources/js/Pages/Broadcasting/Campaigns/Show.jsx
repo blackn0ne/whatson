@@ -10,6 +10,8 @@ import {
     Pencil,
     Clock,
     ExternalLink,
+    Zap,
+    Timer,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -54,7 +56,7 @@ function calc(target) {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export default function CampaignShow({ campaign, sample = [], reportUrl }) {
+export default function CampaignShow({ campaign, sample = [], reportUrl, liveStats = null }) {
     const { t } = useTranslation();
     const { props } = usePage();
     const userTz = props.timezone || browserTz() || 'Asia/Dhaka';
@@ -65,8 +67,8 @@ export default function CampaignShow({ campaign, sample = [], reportUrl }) {
     useEffect(() => {
         if (!['queued', 'sending'].includes(campaign.status)) return;
         const id = setInterval(() => {
-            router.reload({ only: ['campaign', 'sample'] });
-        }, 8000);
+            router.reload({ only: ['campaign', 'sample', 'liveStats'] });
+        }, 3000);
         return () => clearInterval(id);
     }, [campaign.status]);
 
@@ -193,6 +195,62 @@ export default function CampaignShow({ campaign, sample = [], reportUrl }) {
                 {needsQueueWorker && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
                         {t('campaign.queue_worker_hint')}
+                    </div>
+                )}
+
+                {liveStats && (totals.total ?? 0) > 0 && (
+                    <div className="rounded-xl border border-brand-200 dark:border-brand-800 bg-brand-50/50 dark:bg-brand-900/10 p-5">
+                        <div className="flex flex-wrap items-center gap-2 mb-4">
+                            <Zap className="h-4 w-4 text-brand-600" />
+                            <h3 className="font-medium text-neutral-900 dark:text-neutral-100">
+                                {t('campaign.live_progress')}
+                            </h3>
+                            <span className="ml-auto text-xs text-neutral-500">{t('campaign.updates_every_3s')}</span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                            <div>
+                                <div className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">
+                                    {liveStats.progress_pct}%
+                                </div>
+                                <div className="text-xs text-neutral-500">{t('campaign.progress')}</div>
+                            </div>
+                            <div>
+                                <div className="text-2xl font-bold text-blue-600">
+                                    {liveStats.per_hour}
+                                </div>
+                                <div className="text-xs text-neutral-500">{t('campaign.per_hour')}</div>
+                            </div>
+                            <div>
+                                <div className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">
+                                    {liveStats.sent}/{liveStats.total}
+                                </div>
+                                <div className="text-xs text-neutral-500">{t('campaign.sent_of_total')}</div>
+                            </div>
+                            <div>
+                                <div className="text-2xl font-bold text-neutral-900 dark:text-neutral-100 flex items-center gap-1">
+                                    <Timer className="h-5 w-5 text-neutral-400" />
+                                    {liveStats.eta_minutes != null
+                                        ? t('campaign.eta_minutes', { count: liveStats.eta_minutes })
+                                        : '—'}
+                                </div>
+                                <div className="text-xs text-neutral-500">{t('campaign.eta')}</div>
+                            </div>
+                        </div>
+                        <div className="mt-4 h-2 rounded-full bg-neutral-200 dark:bg-neutral-700 overflow-hidden">
+                            <div
+                                className="h-full bg-brand-500 transition-all duration-500"
+                                style={{ width: `${liveStats.progress_pct}%` }}
+                            />
+                        </div>
+                        {liveStats.send_settings && (
+                            <p className="mt-3 text-xs text-neutral-500">
+                                {t('campaign.speed_label', {
+                                    mpm: liveStats.send_settings.messages_per_minute,
+                                    chunk: liveStats.send_settings.chunk_size,
+                                    pause: liveStats.send_settings.chunk_pause_seconds,
+                                })}
+                            </p>
+                        )}
                     </div>
                 )}
 

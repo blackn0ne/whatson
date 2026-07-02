@@ -8,6 +8,7 @@ use App\Modules\Broadcasting\Models\Campaign;
 use App\Modules\Broadcasting\Models\CampaignRecipient;
 use App\Modules\Broadcasting\Models\UsageMeter;
 use App\Modules\Broadcasting\Services\CampaignAudienceResolver;
+use App\Modules\Broadcasting\Services\CampaignSendSettings;
 use App\Modules\Broadcasting\Services\CampaignPersonalizer;
 use App\Modules\Broadcasting\Services\Sms\SmsDriverManager;
 use App\Modules\Shared\Models\ChannelAccount;
@@ -175,10 +176,50 @@ class CampaignController extends Controller
             ->limit(10)
             ->get();
 
+        $liveStats = null;
+        if (in_array($campaign->status, ['queued', 'sending'], true)) {
+            $totals = $campaign->totals_json ?? [];
+            $sentTotal = (int) ($totals['sent'] ?? 0);
+            $total = (int) ($totals['total'] ?? 0);
+            $failed = (int) ($totals['failed'] ?? 0);
+            $queued = (int) ($totals['queued'] ?? 0);
+
+            $sentLastHour = CampaignRecipient::where('campaign_id', $campaign->id)
+                ->whereNotNull('sent_at')
+                ->where('sent_at', '>=', now()->subHour())
+                ->count();
+
+            $sentLast5Min = CampaignRecipient::where('campaign_id', $campaign->id)
+                ->whereNotNull('sent_at')
+                ->where('sent_at', '>=', now()->subMinutes(5))
+                ->count();
+
+            $perHour = $sentLast5Min > 0
+                ? (int) round($sentLast5Min * 12)
+                : $sentLastHour;
+
+            $remaining = max(0, $queued > 0 ? $queued : $total - $sentTotal - $failed);
+            $etaMinutes = $perHour > 0 && $remaining > 0
+                ? (int) ceil($remaining / $perHour * 60)
+                : null;
+
+            $liveStats = [
+                'sent' => $sentTotal,
+                'total' => $total,
+                'failed' => $failed,
+                'remaining' => $remaining,
+                'per_hour' => $perHour,
+                'eta_minutes' => $etaMinutes,
+                'progress_pct' => $total > 0 ? min(100, (int) round(($sentTotal + $failed) / $total * 100)) : 0,
+                'send_settings' => CampaignSendSettings::resolve($campaign->payload_json),
+            ];
+        }
+
         return Inertia::render('Broadcasting/Campaigns/Show', [
             'campaign' => $campaign,
             'stats' => $recipientStats,
             'sample' => $sample,
+            'liveStats' => $liveStats,
             'reportUrl' => route('client.reports.campaigns.show', $campaign->uuid),
         ]);
     }
@@ -221,7 +262,7 @@ class CampaignController extends Controller
             ? __('campaign.launch_scheduled', ['count' => $audienceCount])
             : __('campaign.launch_started', ['count' => $audienceCount]);
 
-        return back()->with('success', $message);
+        return redirect()->route('client.campaigns.show', $campaign)->with('success', $message);
     }
 
     public function pause(Request $request, Campaign $campaign): RedirectResponse
@@ -470,7 +511,10 @@ class CampaignController extends Controller
             $tplName = (string) ($campaign->template_ref['name'] ?? '');
 
             if ($body === '' && $tplName === '') {
-                abort(422, 'Enter a message body before launching.');
+                $hasMedia = trim((string) ($campaign->payload_json['media_url'] ?? '')) !== '';
+                if (! $hasMedia) {
+                    abort(422, 'Enter a message body before launching.');
+                }
             }
 
             return;

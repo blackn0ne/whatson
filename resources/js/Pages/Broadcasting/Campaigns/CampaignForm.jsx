@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useForm, usePage } from '@inertiajs/react';
+import { useForm, usePage, router } from '@inertiajs/react';
 import { Trans, useTranslation } from 'react-i18next';
 import axios from 'axios';
 import {
@@ -24,12 +24,18 @@ import TimezonePicker from '@/Components/TimezonePicker';
 import { DatePicker } from '@/Components/ui';
 
 import TemplatePreview from '@/Components/TemplatePreview';
+import WhatsAppMessageEditor from '@/Components/WhatsAppMessageEditor';
 
-const STEPS = [
-    { key: 'setup', labelKey: 'campaign.step_setup' },
-    { key: 'schedule', labelKey: 'campaign.step_schedule' },
-    { key: 'review', labelKey: 'campaign.step_review' },
-];
+const SEND_PRESETS = {
+    safe: { messages_per_minute: 15, chunk_size: 50, chunk_pause_seconds: 120 },
+    normal: { messages_per_minute: 30, chunk_size: 100, chunk_pause_seconds: 60 },
+    fast: { messages_per_minute: 45, chunk_size: 150, chunk_pause_seconds: 30 },
+};
+
+const defaultSendSettings = () => ({
+    preset: 'normal',
+    ...SEND_PRESETS.normal,
+});
 
 const CHANNEL_META = {
     whatsapp: { label: 'WhatsApp', Icon: (p) => <ChannelBrandIcon channel="whatsapp" {...p} /> },
@@ -73,7 +79,15 @@ function defaultInitialData(campaign, userTz) {
                 reply_to: campaign.payload_json?.reply_to ?? '',
                 track_opens: campaign.payload_json?.track_opens ?? true,
                 track_clicks: campaign.payload_json?.track_clicks ?? false,
+                media_url: campaign.payload_json?.media_url ?? '',
+                media_type: campaign.payload_json?.media_type ?? 'image',
+                media_filename: campaign.payload_json?.media_filename ?? '',
+                send_settings: {
+                    ...defaultSendSettings(),
+                    ...(campaign.payload_json?.send_settings ?? {}),
+                },
             },
+            send_mode: campaign.schedule_at ? 'scheduled' : 'now',
             schedule_at: campaign.schedule_at ? utcToTzLocal(campaign.schedule_at, tz) : '',
             timezone: tz,
         };
@@ -86,7 +100,20 @@ function defaultInitialData(campaign, userTz) {
         audience_type: 'csv',
         audience_ref: '',
         template_ref: { name: '', language: 'en', components: [] },
-        payload_json: { subject: '', body: '', from_email: '', from_name: '', reply_to: '', track_opens: true, track_clicks: false },
+        payload_json: {
+            subject: '',
+            body: '',
+            from_email: '',
+            from_name: '',
+            reply_to: '',
+            track_opens: true,
+            track_clicks: false,
+            media_url: '',
+            media_type: 'image',
+            media_filename: '',
+            send_settings: defaultSendSettings(),
+        },
+        send_mode: 'now',
         schedule_at: '',
         timezone: fallbackTz,
     };
@@ -250,9 +277,9 @@ export default function CampaignForm({
 }) {
     const { t } = useTranslation();
     const senders = whatsappSenders.length > 0 ? whatsappSenders : whatsappPhoneNumbers;
-    const [step, setStep] = useState(0);
     const [draftUuid, setDraftUuid] = useState(campaign?.uuid ?? null);
-    const [draftStatus, setDraftStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
+    const [draftStatus, setDraftStatus] = useState(null);
+    const [launching, setLaunching] = useState(false);
     const [audiencePreview, setAudiencePreview] = useState({
         loading: false,
         matched: 0,
@@ -363,7 +390,7 @@ export default function CampaignForm({
     const debounceRef = useRef(null);
     useEffect(() => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
-        if (data.audience_type === 'csv' && !data.audience_ref) {
+        if (!data.audience_ref) {
             setAudiencePreview({ loading: false, matched: 0, deliverable: 0, sample: [], error: null });
             return;
         }
@@ -412,7 +439,7 @@ export default function CampaignForm({
                 template_ref: data.template_ref,
                 payload_json: data.payload_json,
                 timezone: data.timezone,
-                schedule_at: data.schedule_at
+                schedule_at: data.send_mode === 'scheduled' && data.schedule_at
                     ? tzLocalToUtcIso(data.schedule_at, data.timezone || 'UTC')
                     : null,
             };
@@ -420,52 +447,63 @@ export default function CampaignForm({
             setDraftUuid(res.data.uuid);
             setDraftStatus('saved');
             setTimeout(() => setDraftStatus(null), 3000);
-            return true;
+            return res.data.uuid;
         } catch {
             setDraftStatus('error');
             setTimeout(() => setDraftStatus(null), 4000);
-            return false;
+            return null;
         }
     };
 
-    const next = async () => {
-        const saved = await saveDraft();
-        if (saved) {
-            setStep((s) => Math.min(s + 1, STEPS.length - 1));
+    const isFormValid = useMemo(() => {
+        if (!data.name.trim() || !data.channel) return false;
+
+        if (data.channel === 'whatsapp') {
+            if (senders.length === 0) return false;
+            if (senders.length > 1 && !data.whatsapp_phone_number_id) return false;
         }
-    };
-    const prev = () => setStep((s) => Math.max(s - 1, 0));
 
-    const isStepValid = useMemo(() => {
-        if (step === 0) {
-            if (!data.name.trim() || !data.channel) return false;
+        if (!data.audience_ref) return false;
 
-            if (data.channel === 'whatsapp') {
-                if (senders.length === 0) return false;
-                if (senders.length > 1 && !data.whatsapp_phone_number_id) return false;
-            }
+        if (data.send_mode === 'scheduled' && !data.schedule_at) return false;
 
-            if (data.audience_type === 'csv' && !data.audience_ref) return false;
-            if ((data.audience_type === 'segment' || data.audience_type === 'tag') && !data.audience_ref) {
-                return false;
+        if (data.channel === 'whatsapp') {
+            if (isUnofficialSender) {
+                const hasBody = (data.payload_json.body || '').trim().length > 0;
+                const hasMedia = !!(data.payload_json.media_url || '').trim();
+                return hasBody || hasMedia;
             }
-
-            if (data.channel === 'whatsapp') {
-                if (isUnofficialSender) {
-                    return (data.payload_json.body || '').trim().length > 0;
-                }
-                return !!data.template_ref.name;
-            }
-            if (data.channel === 'sms') return (data.payload_json.body || '').trim().length > 0;
-            if (data.channel === 'email') {
-                return (
-                    (data.payload_json.subject || '').trim().length > 0 &&
-                    (data.payload_json.body || '').trim().length > 0
-                );
-            }
+            return !!data.template_ref.name;
+        }
+        if (data.channel === 'sms') return (data.payload_json.body || '').trim().length > 0;
+        if (data.channel === 'email') {
+            return (
+                (data.payload_json.subject || '').trim().length > 0 &&
+                (data.payload_json.body || '').trim().length > 0
+            );
         }
         return true;
-    }, [step, data, senders, isUnofficialSender]);
+    }, [data, senders, isUnofficialSender]);
+
+    const handleSendNow = async () => {
+        if (!isFormValid) return;
+        setLaunching(true);
+        const uuid = await saveDraft();
+        if (!uuid) {
+            setLaunching(false);
+            return;
+        }
+        router.post(
+            route('client.campaigns.launch', uuid),
+            {
+                schedule_at:
+                    data.send_mode === 'scheduled' && data.schedule_at
+                        ? tzLocalToUtcIso(data.schedule_at, data.timezone || 'UTC')
+                        : '',
+            },
+            { preserveScroll: false },
+        );
+    };
 
     const handleSubmit = (e) => {
         e.preventDefault();
@@ -475,8 +513,12 @@ export default function CampaignForm({
         // parse it as UTC and the campaign will fire at the wrong moment.
         transform((d) => ({
             ...d,
-            schedule_at: d.schedule_at ? tzLocalToUtcIso(d.schedule_at, d.timezone || 'UTC') : null,
+            schedule_at:
+                d.send_mode === 'scheduled' && d.schedule_at
+                    ? tzLocalToUtcIso(d.schedule_at, d.timezone || 'UTC')
+                    : null,
             audience_ref: d.audience_ref ? String(d.audience_ref) : null,
+            audience_type: 'csv',
         }));
 
         if (draftUuid) {
@@ -533,148 +575,73 @@ export default function CampaignForm({
     return (
         <form onSubmit={handleSubmit}>
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_22rem]">
-                {/* ── Main pane ───────────────────────────────────────────── */}
                 <div className="space-y-4">
-                    {/* Step indicator */}
-                    <div className="flex flex-wrap items-center gap-2">
-                        {STEPS.map((stepDef, i) => (
-                            <div key={stepDef.key} className="flex items-center gap-2">
-                                <button
-                                    type="button"
-                                    onClick={async () => { await saveDraft(); setStep(i); }}
-                                    className={`h-7 w-7 rounded-full flex items-center justify-center text-xs font-semibold transition cursor-pointer hover:ring-2 hover:ring-offset-1 hover:ring-brand-400 ${
-                                        i === step
-                                            ? 'bg-brand-600 text-white ring-2 ring-brand-400 ring-offset-1'
-                                            : i < step
-                                              ? 'bg-brand-500 text-white'
-                                              : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-500 hover:bg-neutral-300 dark:hover:bg-neutral-600'
-                                    }`}
-                                >
-                                    {i < step ? <CheckCircle2 className="h-4 w-4" /> : i + 1}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={async () => { await saveDraft(); setStep(i); }}
-                                    className={`text-xs transition cursor-pointer ${
-                                        i === step
-                                            ? 'text-neutral-900 dark:text-neutral-100 font-medium'
-                                            : i < step
-                                              ? 'text-brand-600 dark:text-brand-400 hover:underline'
-                                              : 'text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300'
-                                    }`}
-                                >
-                                    {t(stepDef.labelKey)}
-                                </button>
-                                {i < STEPS.length - 1 && (
-                                    <div className={`w-6 h-px ${i < step ? 'bg-brand-400' : 'bg-neutral-300 dark:bg-neutral-600'}`} />
-                                )}
-                            </div>
-                        ))}
+                    <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-6 space-y-8">
+                        <SetupStep
+                            data={data}
+                            setData={setData}
+                            errors={errors}
+                            senders={senders}
+                            isUnofficialSender={isUnofficialSender}
+                            preview={audiencePreview}
+                            setAudiencePreview={setAudiencePreview}
+                            whatsappTemplates={filteredTemplates}
+                            selectedTemplate={selectedTemplate}
+                            slots={slots}
+                            updateSlot={updateSlot}
+                            contactTokens={contactTokens}
+                            insertTokenIntoTextarea={insertTokenIntoTextarea}
+                            campaignName={data.name}
+                        />
+
+                        <SendSettingsPanel data={data} setData={setData} />
+
+                        <InlineSchedulePanel data={data} setData={setData} errors={errors} />
                     </div>
 
-                    <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-6 space-y-4">
-                        {step === 0 && (
-                            <SetupStep
-                                data={data}
-                                setData={setData}
-                                errors={errors}
-                                senders={senders}
-                                isUnofficialSender={isUnofficialSender}
-                                segments={segments}
-                                tags={tags}
-                                preview={audiencePreview}
-                                setAudiencePreview={setAudiencePreview}
-                                whatsappTemplates={filteredTemplates}
-                                selectedTemplate={selectedTemplate}
-                                slots={slots}
-                                updateSlot={updateSlot}
-                                contactTokens={contactTokens}
-                                insertTokenIntoTextarea={insertTokenIntoTextarea}
-                                campaignName={data.name}
-                            />
-                        )}
-
-                        {step === 1 && (
-                            <ScheduleStep data={data} setData={setData} errors={errors} />
-                        )}
-
-                        {step === 2 && (
-                            <ReviewStep
-                                data={data}
-                                preview={audiencePreview}
-                                selectedTemplate={selectedTemplate}
-                                slots={slots}
-                                contactTokens={contactTokens}
-                                campaign={campaign}
-                                testTo={testTo}
-                                setTestTo={setTestTo}
-                                sendTest={sendTest}
-                                senders={senders}
-                                isUnofficialSender={isUnofficialSender}
-                            />
-                        )}
-                    </div>
-
-                    {/* Step nav */}
                     <div className="flex flex-wrap items-center gap-3">
-                        {step > 0 && (
-                            <button
-                                type="button"
-                                onClick={prev}
-                                className="flex items-center gap-1.5 rounded-lg border border-neutral-300 dark:border-neutral-600 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition"
-                            >
-                                <ArrowLeft className="h-4 w-4" /> {t('common.back')}
-                            </button>
-                        )}
-
-                        {/* Draft save indicator */}
                         {draftStatus === 'saving' && (
-                            <span className="flex items-center gap-1.5 text-xs text-neutral-400 dark:text-neutral-500">
+                            <span className="flex items-center gap-1.5 text-xs text-neutral-400">
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('campaign.saving_draft')}
                             </span>
                         )}
                         {draftStatus === 'saved' && (
-                            <span className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                            <span className="flex items-center gap-1.5 text-xs text-emerald-600">
                                 <Save className="h-3.5 w-3.5" /> {t('campaign.draft_saved')}
                             </span>
                         )}
                         {draftStatus === 'error' && (
-                            <span className="flex items-center gap-1.5 text-xs text-red-500 dark:text-red-400">
+                            <span className="flex items-center gap-1.5 text-xs text-red-500">
                                 <AlertCircle className="h-3.5 w-3.5" /> {t('campaign.draft_save_failed')}
                             </span>
                         )}
 
-                        {step < STEPS.length - 1 ? (
-                            <button
-                                type="button"
-                                onClick={next}
-                                disabled={!isStepValid || draftStatus === 'saving'}
-                                className="ml-auto flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50 transition"
-                            >
-                                {draftStatus === 'saving' ? (
-                                    <><Loader2 className="h-4 w-4 animate-spin" /> {t('campaign.saving')}</>
-                                ) : (
-                                    <>{t('common.next')} <ArrowRight className="h-4 w-4" /></>
-                                )}
-                            </button>
-                        ) : (
-                            <button
-                                type="submit"
-                                disabled={processing}
-                                className="ml-auto flex items-center gap-1.5 rounded-lg bg-brand-600 px-5 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60 transition"
-                            >
-                                <Send className="h-4 w-4" />
-                                {processing
-                                    ? t('campaign.saving')
-                                    : mode === 'edit'
-                                      ? t('campaign.save_changes')
-                                      : t('campaign.create_campaign')}
-                            </button>
-                        )}
+                        <button
+                            type="submit"
+                            disabled={processing || launching}
+                            className="rounded-lg border border-neutral-300 dark:border-neutral-600 px-4 py-2 text-sm font-medium text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50"
+                        >
+                            {processing ? t('campaign.saving') : mode === 'edit' ? t('campaign.save_changes') : t('campaign.save_draft')}
+                        </button>
+
+                        <button
+                            type="button"
+                            disabled={!isFormValid || launching || processing || draftStatus === 'saving'}
+                            onClick={handleSendNow}
+                            className="ml-auto flex items-center gap-1.5 rounded-lg bg-green-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50 transition"
+                        >
+                            {launching ? (
+                                <><Loader2 className="h-4 w-4 animate-spin" /> {t('campaign.launching')}</>
+                            ) : (
+                                <>
+                                    <Send className="h-4 w-4" />
+                                    {data.send_mode === 'scheduled' ? t('campaign.schedule_send') : t('campaign.send_now')}
+                                </>
+                            )}
+                        </button>
                     </div>
                 </div>
 
-                {/* ── Live preview pane ──────────────────────────────────── */}
                 <PreviewPane
                     data={data}
                     selectedTemplate={selectedTemplate}
@@ -697,8 +664,6 @@ function SetupStep({
     errors,
     senders,
     isUnofficialSender,
-    segments,
-    tags,
     preview,
     setAudiencePreview,
     whatsappTemplates,
@@ -724,8 +689,6 @@ function SetupStep({
                 <AudienceStep
                     data={data}
                     setData={setData}
-                    segments={segments}
-                    tags={tags}
                     preview={preview}
                     setAudiencePreview={setAudiencePreview}
                     errors={errors}
@@ -1030,13 +993,13 @@ function SenderBadge({ provider }) {
     );
 }
 
-function AudienceStep({ data, setData, segments, tags, preview, setAudiencePreview, errors }) {
+function AudienceStep({ data, setData, preview, setAudiencePreview, errors }) {
     const { t } = useTranslation();
-    const channelLabel = CHANNEL_META[data.channel]?.label ?? data.channel;
 
     return (
         <>
-            <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.select_audience')}</h3>
+            <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.recipients')}</h3>
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">{t('campaign.recipients_hint')}</p>
 
             <AudiencePhoneUpload
                 data={data}
@@ -1044,107 +1007,34 @@ function AudienceStep({ data, setData, segments, tags, preview, setAudiencePrevi
                 setAudiencePreview={setAudiencePreview}
             />
 
-            <div>
-                <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300 block mb-2">
-                    {t('campaign.or_use_existing')}
-                </label>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                    {[
-                        ['segment', t('campaign.audience_segment')],
-                        ['tag', t('campaign.audience_tag')],
-                        ['contact_list', t('campaign.audience_all_contacts')],
-                    ].map(([val, label]) => (
-                        <button
-                            key={val}
-                            type="button"
-                            onClick={() => {
-                                setData('audience_type', val);
-                                if (val === 'contact_list') setData('audience_ref', '');
-                                if (val !== data.audience_type) setData('audience_ref', '');
-                            }}
-                            className={`rounded-lg border p-3 text-sm font-medium transition ${
-                                data.audience_type === val
-                                    ? 'border-brand-600 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300'
-                                    : 'border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 hover:border-brand-300'
-                            }`}
-                        >
-                            {label}
-                        </button>
-                    ))}
-                </div>
-                <FieldError message={errors.audience_type} />
-            </div>
-
-            {data.audience_type === 'segment' && (
-                <SearchableSelect
-                    label={t('campaign.audience_segment')}
-                    items={segments.map((s) => ({
-                        id: s.id,
-                        label: s.name,
-                        meta: `${s.type ?? ''}${s.contact_count ? ` · ${t('campaign.contact_count', { count: s.contact_count })}` : ''}`,
-                    }))}
-                    value={data.audience_ref}
-                    onChange={(v) => setData('audience_ref', v)}
-                    placeholder={t('campaign.pick_segment')}
-                    emptyHint={t('campaign.no_segments_hint')}
-                />
-            )}
-
-            {data.audience_type === 'tag' && (
-                <SearchableSelect
-                    label={t('campaign.audience_tag')}
-                    items={tags.map((tag) => ({
-                        id: tag.id,
-                        label: tag.name,
-                        meta: tag.color ?? '',
-                    }))}
-                    value={data.audience_ref}
-                    onChange={(v) => setData('audience_ref', v)}
-                    placeholder={t('campaign.pick_tag')}
-                    emptyHint={t('campaign.no_tags_hint')}
-                />
-            )}
-
-            {data.audience_type === 'csv' && data.audience_ref && (
-                <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                    {t('campaign.csv_ready')}
-                </p>
-            )}
-
-            {/* Audience preview */}
-            <div className="mt-4 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/40 p-3">
+            <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/40 p-3">
                 <div className="flex items-center gap-2 text-sm font-medium text-neutral-700 dark:text-neutral-200">
-                    <Users className="h-4 w-4" /> {t('campaign.audience_preview')}
-                    {preview.loading && <Loader2 className="h-3.5 w-3.5 animate-spin text-neutral-400" />}
+                    <Users className="h-4 w-4" />
+                    {preview.loading ? (
+                        <span className="flex items-center gap-2">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('campaign.counting')}
+                        </span>
+                    ) : data.audience_ref ? (
+                        <span>
+                            <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                                {(preview.deliverable || preview.matched || 0).toLocaleString()}
+                            </span>{' '}
+                            {t('campaign.recipients_ready')}
+                        </span>
+                    ) : (
+                        <span className="text-neutral-500">{t('campaign.upload_phones_to_preview')}</span>
+                    )}
                 </div>
-                {preview.error ? (
-                    <p className="mt-2 text-xs text-red-600 dark:text-red-400">{preview.error}</p>
-                ) : data.audience_type === 'csv' && !data.audience_ref ? (
-                    <p className="mt-2 text-xs text-neutral-500">
-                        {t('campaign.upload_phones_to_preview')}
+                {preview.error && (
+                    <p className="mt-2 text-xs text-red-600">{preview.error}</p>
+                )}
+                {preview.sample.length > 0 && (
+                    <p className="mt-2 text-xs text-neutral-500 font-mono truncate">
+                        {preview.sample.map((c) => c.phone_e164 || c.email).filter(Boolean).join(', ')}
                     </p>
-                ) : (
-                    <>
-                        <p className="mt-2 text-sm text-neutral-700 dark:text-neutral-200">
-                            <span className="font-semibold">{preview.matched.toLocaleString()}</span> {t('campaign.contacts_match')}{' '}
-                            <span className="text-neutral-500 dark:text-neutral-400">
-                                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                                    {preview.deliverable.toLocaleString()}
-                                </span>{' '}
-                                {t('campaign.opted_in_for', { channel: channelLabel })}
-                            </span>
-                        </p>
-                        {preview.sample.length > 0 && (
-                            <div className="mt-2 text-xs text-neutral-500">
-                                {t('campaign.sample')}: {preview.sample
-                                    .map((c) => c.phone_e164 || c.email)
-                                    .filter(Boolean)
-                                    .join(', ')}
-                            </div>
-                        )}
-                    </>
                 )}
             </div>
+            <FieldError message={errors.audience_ref} />
         </>
     );
 }
@@ -1168,62 +1058,22 @@ function ContentStep({
             <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.message_content')}</h3>
 
             {data.channel === 'whatsapp' && isUnofficialSender && (
-                <>
-                    <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                        {t('campaign.unofficial_message_hint')}
-                    </p>
-                    <BodyTextarea
-                        label={t('campaign.whatsapp_message')}
-                        field="body"
-                        value={data.payload_json.body}
-                        onChange={(v) => setData('payload_json', { ...data.payload_json, body: v })}
-                        placeholder={t('campaign.unofficial_body_placeholder')}
-                        rows={6}
-                        contactTokens={contactTokens}
-                        onInsertToken={(token) => insertTokenIntoTextarea('body', token)}
-                        error={errors['payload_json.body']}
-                    />
-                    {whatsappTemplates.length > 0 && (
-                        <div>
-                            <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                                {t('campaign.load_from_template')}
-                            </label>
-                            <select
-                                value={
-                                    whatsappTemplates.find(
-                                        (tpl) =>
-                                            tpl.name === data.template_ref.name &&
-                                            tpl.language === data.template_ref.language,
-                                    )?.id ?? ''
-                                }
-                                onChange={(e) => {
-                                    const v = e.target.value;
-                                    if (!v) return;
-                                    const tpl = whatsappTemplates.find((x) => String(x.id) === v);
-                                    if (tpl) {
-                                        setData('template_ref', {
-                                            ...data.template_ref,
-                                            name: tpl.name,
-                                            language: tpl.language,
-                                        });
-                                        const bodyText = pickPreviewText(tpl.components ?? []);
-                                        if (bodyText) {
-                                            setData('payload_json', { ...data.payload_json, body: bodyText });
-                                        }
-                                    }
-                                }}
-                                className={inputClass}
-                            >
-                                <option value="">{t('campaign.select_template_optional')}</option>
-                                {whatsappTemplates.map((tpl) => (
-                                    <option key={tpl.id} value={tpl.id}>
-                                        {tpl.name} ({tpl.language})
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                    )}
-                </>
+                <WhatsAppMessageEditor
+                    body={data.payload_json.body || ''}
+                    mediaUrl={data.payload_json.media_url || ''}
+                    onBodyChange={(v) => setData('payload_json', { ...data.payload_json, body: v })}
+                    onMediaChange={(url, filename) =>
+                        setData('payload_json', {
+                            ...data.payload_json,
+                            media_url: url,
+                            media_type: 'image',
+                            media_filename: filename || '',
+                        })
+                    }
+                    contactTokens={contactTokens}
+                    onInsertToken={(token) => insertTokenIntoTextarea('body', `{{${token}}}`)}
+                    error={errors['payload_json.body']}
+                />
             )}
 
             {data.channel === 'whatsapp' && !isUnofficialSender && (
@@ -1325,7 +1175,7 @@ function ContentStep({
                     placeholder={t('campaign.sms_body_placeholder')}
                     rows={4}
                     contactTokens={contactTokens}
-                    onInsertToken={(token) => insertTokenIntoTextarea('body', token)}
+                    onInsertToken={(token) => insertTokenIntoTextarea('body', `{{${token}}}`)}
                     error={errors['payload_json.body']}
                 />
             )}
@@ -1356,6 +1206,160 @@ function ContentStep({
                 </>
             )}
         </>
+    );
+}
+
+function SendSettingsPanel({ data, setData }) {
+    const { t } = useTranslation();
+    const settings = data.payload_json.send_settings ?? defaultSendSettings();
+
+    const setPreset = (preset) => {
+        const base = preset === 'custom'
+            ? settings
+            : { preset, ...SEND_PRESETS[preset] };
+        setData('payload_json', {
+            ...data.payload_json,
+            send_settings: base,
+        });
+    };
+
+    const updateCustom = (key, value) => {
+        setData('payload_json', {
+            ...data.payload_json,
+            send_settings: {
+                ...settings,
+                preset: 'custom',
+                [key]: value,
+            },
+        });
+    };
+
+    const mpm = settings.messages_per_minute ?? 30;
+
+    return (
+        <div className="border-t border-neutral-200 dark:border-neutral-700 pt-6 space-y-4">
+            <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.send_speed')}</h3>
+            <p className="text-sm text-neutral-500">{t('campaign.send_speed_hint')}</p>
+
+            <div className="grid grid-cols-3 gap-2">
+                {[
+                    ['safe', t('campaign.preset_safe'), '15/мин'],
+                    ['normal', t('campaign.preset_normal'), '30/мин'],
+                    ['fast', t('campaign.preset_fast'), '45/мин'],
+                ].map(([key, label, rate]) => (
+                    <button
+                        key={key}
+                        type="button"
+                        onClick={() => setPreset(key)}
+                        className={`rounded-lg border p-3 text-left transition ${
+                            settings.preset === key
+                                ? 'border-brand-600 bg-brand-50 dark:bg-brand-900/20'
+                                : 'border-neutral-200 dark:border-neutral-700 hover:border-brand-300'
+                        }`}
+                    >
+                        <div className="text-sm font-medium">{label}</div>
+                        <div className="text-xs text-neutral-500 mt-0.5">{rate}</div>
+                    </button>
+                ))}
+            </div>
+
+            <details className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3">
+                <summary className="cursor-pointer text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                    {t('campaign.advanced_speed')}
+                </summary>
+                <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                        <label className="text-xs text-neutral-500">{t('campaign.msg_per_minute')}</label>
+                        <input
+                            type="number"
+                            min={1}
+                            max={60}
+                            value={mpm}
+                            onChange={(e) => updateCustom('messages_per_minute', Number(e.target.value))}
+                            className={inputClass}
+                        />
+                    </div>
+                    <div>
+                        <label className="text-xs text-neutral-500">{t('campaign.chunk_size')}</label>
+                        <input
+                            type="number"
+                            min={10}
+                            max={1000}
+                            value={settings.chunk_size ?? 100}
+                            onChange={(e) => updateCustom('chunk_size', Number(e.target.value))}
+                            className={inputClass}
+                        />
+                    </div>
+                    <div>
+                        <label className="text-xs text-neutral-500">{t('campaign.chunk_pause')}</label>
+                        <input
+                            type="number"
+                            min={0}
+                            max={600}
+                            value={settings.chunk_pause_seconds ?? 60}
+                            onChange={(e) => updateCustom('chunk_pause_seconds', Number(e.target.value))}
+                            className={inputClass}
+                        />
+                    </div>
+                </div>
+            </details>
+        </div>
+    );
+}
+
+function InlineSchedulePanel({ data, setData, errors }) {
+    const { t } = useTranslation();
+
+    return (
+        <div className="border-t border-neutral-200 dark:border-neutral-700 pt-6 space-y-3">
+            <h3 className="font-medium text-neutral-800 dark:text-neutral-200">{t('campaign.when_send')}</h3>
+            <div className="flex flex-wrap gap-2">
+                {[
+                    ['now', t('campaign.send_now')],
+                    ['scheduled', t('campaign.send_later')],
+                ].map(([mode, label]) => (
+                    <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setData('send_mode', mode)}
+                        className={`rounded-lg border px-4 py-2 text-sm font-medium transition ${
+                            data.send_mode === mode
+                                ? 'border-brand-600 bg-brand-50 dark:bg-brand-900/20 text-brand-700'
+                                : 'border-neutral-200 dark:border-neutral-700 text-neutral-600'
+                        }`}
+                    >
+                        {label}
+                    </button>
+                ))}
+            </div>
+            {data.send_mode === 'scheduled' && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 mt-2">
+                    <div>
+                        <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                            {t('campaign.send_at')}
+                        </label>
+                        <DatePicker
+                            mode="datetime"
+                            value={data.schedule_at}
+                            onChange={(v) => setData('schedule_at', v)}
+                            className="mt-1"
+                            error={!!errors.schedule_at}
+                        />
+                        <FieldError message={errors.schedule_at} />
+                    </div>
+                    <div>
+                        <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                            {t('campaign.timezone')}
+                        </label>
+                        <TimezonePicker
+                            value={data.timezone}
+                            onChange={(tz) => setData('timezone', tz)}
+                            className="mt-1"
+                        />
+                    </div>
+                </div>
+            )}
+        </div>
     );
 }
 
@@ -1905,8 +1909,17 @@ function PreviewPane({ data, selectedTemplate, slots, contactTokens, audiencePre
     if (data.channel === 'whatsapp') {
         if (isUnofficialSender) {
             content = (
-                <div className="rounded-2xl rounded-tl-none bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-sm text-neutral-800 dark:text-neutral-100 shadow-sm whitespace-pre-line">
-                    {data.payload_json.body || '—'}
+                <div className="space-y-2">
+                    {data.payload_json.media_url && (
+                        <img
+                            src={data.payload_json.media_url}
+                            alt=""
+                            className="max-h-40 rounded-lg border border-neutral-200 dark:border-neutral-700 object-cover"
+                        />
+                    )}
+                    <div className="rounded-2xl rounded-tl-none bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 text-sm text-neutral-800 dark:text-neutral-100 shadow-sm whitespace-pre-line">
+                        {data.payload_json.body || (data.payload_json.media_url ? '📷' : '—')}
+                    </div>
                 </div>
             );
         } else if (selectedTemplate) {

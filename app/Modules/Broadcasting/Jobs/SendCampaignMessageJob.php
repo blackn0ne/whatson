@@ -8,6 +8,7 @@ use App\Modules\Broadcasting\Models\CampaignRecipient;
 use App\Modules\Broadcasting\Models\UsageMeter;
 use App\Modules\Broadcasting\Models\WorkspaceSmtpConfig;
 use App\Modules\Broadcasting\Services\CampaignPersonalizer;
+use App\Modules\Broadcasting\Services\CampaignSendSettings;
 use App\Modules\Broadcasting\Services\Sms\SmsDriverManager;
 use App\Modules\Shared\Models\ChannelAccount;
 use App\Modules\Shared\Models\Contact;
@@ -272,9 +273,36 @@ class SendCampaignMessageJob implements ShouldQueue
         }
 
         // Throttle bulk sends on the unofficial channel.
-        $delayMs = (int) config('whatsapp.wppconnect.bulk_delay_ms', 0);
-        if ($delayMs > 0) {
-            usleep($delayMs * 1000);
+        $delayMs = CampaignSendSettings::resolve($campaign->payload_json)['delay_ms'];
+        $configDelay = (int) config('whatsapp.wppconnect.bulk_delay_ms', 0);
+        $sleepMs = max($delayMs, $configDelay);
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        $mediaUrl = trim((string) ($campaign->payload_json['media_url'] ?? ''));
+        if ($mediaUrl !== '') {
+            $mediaType = (string) ($campaign->payload_json['media_type'] ?? 'image');
+            if (! in_array($mediaType, ['image', 'video', 'document'], true)) {
+                $mediaType = 'image';
+            }
+            $caption = $text !== '' ? $text : null;
+            $id = $gateway->sendMedia($phone, $mediaType, [
+                'link' => $mediaUrl,
+                'caption' => $caption,
+                'filename' => $campaign->payload_json['media_filename'] ?? null,
+            ]);
+
+            return [
+                'id' => $id,
+                'body' => $caption ?? $mediaUrl,
+                'type' => $mediaType,
+                'payload' => array_filter([
+                    'body' => $caption,
+                    'media_url' => $mediaUrl,
+                    'media_type' => $mediaType,
+                ]),
+            ];
         }
 
         $id = $gateway->sendText($phone, $text);
