@@ -91,11 +91,14 @@ class I18nFileService
     /** Read locale file and return flat key => value. */
     public function getFlatDictionary(string $code): array
     {
+        $path = $this->path($code);
+        $fileToken = File::exists($path)
+            ? (string) filemtime($path).':'.(string) filesize($path)
+            : 'missing';
         $version = $this->cacheVersion();
-        $cacheKey = 'i18n:file:'.$code.':'.$version;
+        $cacheKey = 'i18n:file:'.$code.':'.$version.':'.$fileToken;
 
-        return Cache::remember($cacheKey, 3600, function () use ($code) {
-            $path = $this->path($code);
+        return Cache::remember($cacheKey, 3600, function () use ($path) {
             if (! File::exists($path)) {
                 return [];
             }
