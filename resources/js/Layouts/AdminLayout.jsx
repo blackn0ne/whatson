@@ -138,7 +138,7 @@ export default function AdminLayout({ title = 'Admin', header, children }) {
                 footer={<AdminLayoutFooter />}
             />
 
-            <div className="lg:pl-64 rtl:lg:pl-0 rtl:lg:pr-64">
+            <div className="lg:pl-16 rtl:lg:pl-0 rtl:lg:pr-16">
                 <Topbar
                     showLogo={false}
                     title={title}

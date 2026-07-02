@@ -113,6 +113,10 @@
         "group_ai": "Искусственный интеллект",
         "group_leads": "Лиды",
         "group_reports": "Отчеты",
+        "group_outreach": "Рассылки",
+        "group_audience": "Аудитория",
+        "group_automate": "Автоматизация",
+        "group_settings": "Настройки",
         "group_support": "Поддержка",
         "group_billing": "Биллинг",
         "group_developer": "Разработчик"

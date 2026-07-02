@@ -113,6 +113,10 @@
         "group_ai": "AI",
         "group_leads": "Leads",
         "group_reports": "Reports",
+        "group_outreach": "Outreach",
+        "group_audience": "Audience",
+        "group_automate": "Automate",
+        "group_settings": "Settings",
         "group_support": "Support",
         "group_billing": "Billing",
         "group_developer": "Developer"

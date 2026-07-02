@@ -72,7 +72,7 @@ export default function InboxLayout({ children }) {
                     }))}
                 />
 
-                <div className="lg:pl-64 rtl:lg:pl-0 rtl:lg:pr-64 flex-1 overflow-hidden flex flex-col">
+                <div className="lg:pl-16 rtl:lg:pl-0 rtl:lg:pr-16 flex-1 overflow-hidden flex flex-col">
                     {children}
                 </div>
             </div>
