@@ -336,8 +336,10 @@ export default function Sidebar({
             {/* Desktop: mini rail, expands on hover */}
             <div
                 className={[
-                    'hidden lg:fixed lg:inset-y-0 lg:z-30 lg:left-0 rtl:lg:left-auto rtl:lg:right-0',
-                    miniRail ? 'group/sidebar lg:w-16 lg:hover:w-64 lg:transition-[width] lg:duration-200 lg:ease-out lg:overflow-hidden lg:hover:shadow-2xl' : 'lg:w-64 lg:flex lg:flex-col',
+                    'hidden lg:fixed lg:inset-y-0 lg:z-30 lg:left-0 lg:flex lg:flex-col rtl:lg:left-auto rtl:lg:right-0',
+                    miniRail
+                        ? 'group/sidebar lg:w-16 lg:hover:w-64 lg:transition-[width] lg:duration-200 lg:ease-out lg:overflow-hidden lg:hover:shadow-2xl'
+                        : 'lg:w-64',
                 ].join(' ')}
             >
                 <SidebarPanel
