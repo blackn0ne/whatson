@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { ChannelBrandIcon, CHANNEL_LABELS } from '@/Components/BrandIcons';
 import { formatTimeTz, formatInTz } from '@/Utils/datetime';
+import { contactDisplayName, contactPhoneSubtitle } from '@/Utils/inboxContact';
 import { playInboundSound, getSoundPrefs, setChannelSoundEnabled, SOUND_CHANNELS } from '@/Utils/notificationSound';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -801,9 +802,7 @@ function MessageBubble({ msg, conversationId }) {
 function ConversationCard({ conv, isActive, userTz }) {
     const { t } = useTranslation();
     const channel = conv.channel_account?.channel ?? 'whatsapp';
-    const name = conv.contact?.first_name || conv.contact?.last_name
-        ? `${conv.contact.first_name ?? ''} ${conv.contact.last_name ?? ''}`.trim()
-        : conv.contact?.phone_e164 ?? 'Unknown';
+    const name = contactDisplayName(conv.contact, conv.external_thread_id);
 
     const handleContactClick = (e) => {
         e.preventDefault();
@@ -1681,14 +1680,13 @@ export default function InboxShow({
     const otherViewers = viewers.filter(v => v.id !== authUser?.id);
     const filteredList = listSearch.trim() && conversations?.data
         ? conversations.data.filter(c => {
-            const n = `${c.contact?.first_name ?? ''} ${c.contact?.last_name ?? ''} ${c.contact?.phone_e164 ?? ''}`.toLowerCase();
+            const n = contactDisplayName(c.contact, c.external_thread_id).toLowerCase();
             return n.includes(listSearch.toLowerCase());
         })
         : (conversations?.data ?? []);
 
-    const contactName = conversation.contact?.first_name || conversation.contact?.last_name
-        ? `${conversation.contact.first_name ?? ''} ${conversation.contact.last_name ?? ''}`.trim()
-        : conversation.contact?.phone_e164 ?? 'Unknown';
+    const contactName = contactDisplayName(conversation.contact, conversation.external_thread_id);
+    const contactPhone = contactPhoneSubtitle(conversation.contact, conversation.external_thread_id);
 
     const assignedAgent = teamMembers.find(m => m.id === assignedUserId);
 
@@ -2092,7 +2090,9 @@ export default function InboxShow({
                             </div>
                             <div className="min-w-0">
                                 <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 truncate">{contactName}</p>
-                                <p className="text-[11px] text-neutral-400 truncate">{conversation.contact?.phone_e164}</p>
+                                {contactPhone && (
+                                    <p className="text-[11px] text-neutral-400 truncate">{contactPhone}</p>
+                                )}
                             </div>
                         </div>
                         {conversation.contact?.email && (

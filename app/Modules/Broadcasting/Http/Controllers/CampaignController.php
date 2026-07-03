@@ -26,7 +26,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use Inertia\Inertia;
+use App\Support\PhoneNumberNormalizer;
 use Inertia\Response;
 
 class CampaignController extends Controller
@@ -414,7 +414,9 @@ class CampaignController extends Controller
         // driver can normalise for its own provider (some BD providers expect
         // local format 01XXXXXXXXX, not the +880… international prefix).
         if (! empty($validated['phone_e164'])) {
-            $validated['phone_e164'] = preg_replace('/[\s\-()]/', '', $validated['phone_e164']);
+            $validated['phone_e164'] = PhoneNumberNormalizer::normalize(
+                preg_replace('/[\s\-()]/', '', $validated['phone_e164'])
+            ) ?? preg_replace('/[\s\-()]/', '', $validated['phone_e164']);
         }
 
         $personalizer = app(CampaignPersonalizer::class);
@@ -878,33 +880,6 @@ class CampaignController extends Controller
 
     private function normalizePhone(string $raw): ?string
     {
-        $raw = trim($raw);
-        if ($raw === '' || preg_match('/phone/i', $raw)) {
-            return null;
-        }
-
-        $p = preg_replace('/[\s\-().]/', '', $raw);
-        if ($p === '') {
-            return null;
-        }
-
-        if (str_starts_with($p, '00')) {
-            $p = '+'.substr($p, 2);
-        } elseif (! str_starts_with($p, '+') && ctype_digit($p)) {
-            // Kazakhstan: 8XXXXXXXXXX → +7XXXXXXXXXX
-            if (strlen($p) === 11 && str_starts_with($p, '8')) {
-                $p = '+7'.substr($p, 1);
-            } elseif (strlen($p) === 10 && str_starts_with($p, '7')) {
-                $p = '+'.$p;
-            } else {
-                $p = '+'.$p;
-            }
-        }
-
-        if (! preg_match('/^\+\d{8,15}$/', $p)) {
-            return null;
-        }
-
-        return $p;
+        return PhoneNumberNormalizer::normalize($raw);
     }
 }

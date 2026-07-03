@@ -6,6 +6,7 @@ use App\Events\ContactCreated;
 use App\Modules\Shared\Models\Contact;
 use App\Modules\Shared\Models\ContactTag;
 use App\Modules\Shared\Models\Segment;
+use App\Support\PhoneNumberNormalizer;
 use App\Services\StorageManager;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
@@ -26,6 +27,10 @@ class ContactService
         $lookup = [];
 
         if (! empty($data['phone_e164'])) {
+            $normalized = PhoneNumberNormalizer::normalize($data['phone_e164']);
+            if ($normalized) {
+                $data['phone_e164'] = $normalized;
+            }
             $lookup = ['workspace_id' => $workspaceId, 'phone_e164' => $data['phone_e164']];
         } elseif (! empty($data['email'])) {
             $lookup = ['workspace_id' => $workspaceId, 'email' => $data['email']];

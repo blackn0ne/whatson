@@ -3,6 +3,7 @@
 namespace App\Modules\Whatsapp\Services;
 
 use App\Modules\Shared\Models\ChannelAccount;
+use App\Support\PhoneNumberNormalizer;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -188,10 +189,23 @@ class WppConnectClient
         return $this->extractMessageId($resp, 'send-location');
     }
 
-    /** Strip the "+" and any non-digits — WPPConnect expects a bare MSISDN. */
+    /** Accept E.164, bare digits, or full WhatsApp JID (@c.us / @lid). */
     private function normalizePhone(string $phone): string
     {
-        return preg_replace('/\D+/', '', $phone) ?? $phone;
+        $phone = trim($phone);
+
+        if (str_contains($phone, '@')) {
+            return $phone;
+        }
+
+        $digits = PhoneNumberNormalizer::toDigits($phone);
+        if ($digits === null) {
+            throw new \InvalidArgumentException(
+                'Invalid phone number format. Use international format, e.g. +77001234567'
+            );
+        }
+
+        return $digits;
     }
 
     /**

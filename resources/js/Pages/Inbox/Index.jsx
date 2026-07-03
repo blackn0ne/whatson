@@ -11,6 +11,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChannelBrandIcon, CHANNEL_LABELS } from '@/Components/BrandIcons';
 import { formatTimeTz } from '@/Utils/datetime';
+import { contactDisplayName } from '@/Utils/inboxContact';
 
 const FOLDERS = [
     { key: null,         labelKey: 'inbox.folder_all',        icon: Inbox },
@@ -36,9 +37,7 @@ function ConversationCard({ conv, isFlashing, isActive, userTz }) {
     const { t } = useTranslation();
     const channel = conv.channel_account?.channel ?? 'whatsapp';
     const lastMsg = conv.last_message ?? {};
-    const name = conv.contact?.first_name || conv.contact?.last_name
-        ? `${conv.contact.first_name ?? ''} ${conv.contact.last_name ?? ''}`.trim()
-        : conv.contact?.phone_e164 ?? 'Unknown';
+    const name = contactDisplayName(conv.contact, conv.external_thread_id);
 
     const handleContactClick = (e) => {
         e.preventDefault();
@@ -271,7 +270,7 @@ export default function InboxIndex({ conversations: initialConversations, filter
 
     const filtered = search.trim()
         ? conversations.data.filter(c => {
-            const name = `${c.contact?.first_name ?? ''} ${c.contact?.last_name ?? ''} ${c.contact?.phone_e164 ?? ''}`.toLowerCase();
+            const name = contactDisplayName(c.contact, c.external_thread_id).toLowerCase();
             return name.includes(search.toLowerCase());
         })
         : conversations.data;

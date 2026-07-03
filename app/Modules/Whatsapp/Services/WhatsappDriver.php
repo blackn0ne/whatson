@@ -11,6 +11,8 @@ use App\Modules\Shared\Models\Contact;
 use App\Modules\Shared\Models\Conversation;
 use App\Modules\Shared\Models\Message;
 use App\Modules\Shared\Services\ContactService;
+use App\Support\PhoneNumberNormalizer;
+use App\Support\WppAddressParser;
 use App\Modules\Whatsapp\Models\WhatsappPhoneNumber;
 use App\Modules\Whatsapp\Models\WhatsappTemplate;
 use App\Services\WebhookIdempotencyService;
@@ -27,36 +29,51 @@ class WhatsappDriver implements ChannelDriverInterface
     public function send(Message $message): string
     {
         $conversation = $message->conversation;
-        $phone = $conversation->contact->phone_e164;
-
-        // Resolve the provider (official Meta vs unofficial WPPConnect) from the
-        // conversation's channel account so replies go out on the same number and
-        // through the same method the customer is connected on.
         $gateway = $this->gateways->forConversation($conversation);
+        $recipient = $this->resolveRecipient($conversation);
 
         $payload = $message->payload ?? [];
 
         return match ($message->type) {
             'template' => $gateway->sendTemplate(
-                $phone,
+                $recipient,
                 $payload['template']['name'] ?? '',
                 $payload['template']['language'] ?? 'en',
                 $payload['template']['components'] ?? [],
             ),
-            'interactive' => $gateway->sendInteractive($phone, $payload['interactive'] ?? []),
-            'image' => $gateway->sendMedia($phone, 'image', $this->mediaOpts($payload)),
-            'video' => $gateway->sendMedia($phone, 'video', $this->mediaOpts($payload)),
-            'document' => $gateway->sendMedia($phone, 'document', $this->mediaOpts($payload)),
-            'audio' => $gateway->sendMedia($phone, 'audio', $this->mediaOpts($payload)),
+            'interactive' => $gateway->sendInteractive($recipient, $payload['interactive'] ?? []),
+            'image' => $gateway->sendMedia($recipient, 'image', $this->mediaOpts($payload)),
+            'video' => $gateway->sendMedia($recipient, 'video', $this->mediaOpts($payload)),
+            'document' => $gateway->sendMedia($recipient, 'document', $this->mediaOpts($payload)),
+            'audio' => $gateway->sendMedia($recipient, 'audio', $this->mediaOpts($payload)),
             'location' => $gateway->sendLocation(
-                $phone,
+                $recipient,
                 (float) ($payload['location']['latitude'] ?? 0),
                 (float) ($payload['location']['longitude'] ?? 0),
                 $payload['location']['name'] ?? null,
                 $payload['location']['address'] ?? null,
             ),
-            default => $gateway->sendText($phone, $message->body ?? ''),
+            default => $gateway->sendText($recipient, $message->body ?? ''),
         };
+    }
+
+    private function resolveRecipient(Conversation $conversation): string
+    {
+        $account = $conversation->channelAccount;
+
+        if ($account?->isUnofficial()) {
+            return WppAddressParser::toSendAddress(
+                $conversation->contact->phone_e164,
+                $conversation->external_thread_id,
+            );
+        }
+
+        $phone = $conversation->contact->phone_e164;
+        if (! $phone) {
+            throw new \InvalidArgumentException('Contact has no phone number.');
+        }
+
+        return $phone;
     }
 
     /**
@@ -235,6 +252,11 @@ class WhatsappDriver implements ChannelDriverInterface
             return null;
         }
 
+        $parsed = WppAddressParser::fromInboundEvent($event);
+        if ($parsed === null) {
+            return null;
+        }
+
         $msgId = $this->wppMessageId($event['id'] ?? null);
 
         if ($msgId && ! app(WebhookIdempotencyService::class)->isNewEvent('whatsapp_msg', $msgId)) {
@@ -247,21 +269,65 @@ class WhatsappDriver implements ChannelDriverInterface
         }
 
         $workspaceId = (int) $account->workspace_id;
-        $fromDigits = preg_replace('/\D+/', '', $from) ?? $from;
+        $jid = $parsed['jid'];
 
-        $contact = $this->contactService->upsert($workspaceId, [
-            'phone_e164' => '+'.$fromDigits,
-            'opt_in_whatsapp' => true,
-            'source' => 'whatsapp_inbound',
-        ]);
+        $conversation = Conversation::where('workspace_id', $workspaceId)
+            ->where('channel_account_id', $account->id)
+            ->where('external_thread_id', $jid)
+            ->first();
+
+        if ($conversation) {
+            $contact = $conversation->contact;
+            if ($parsed['display_name'] && ! trim($contact->first_name ?? '')) {
+                $contact->update(['first_name' => $parsed['display_name']]);
+            }
+        } elseif ($parsed['phone_e164']) {
+            $contact = $this->contactService->upsert($workspaceId, array_filter([
+                'phone_e164' => $parsed['phone_e164'],
+                'first_name' => $parsed['display_name'],
+                'opt_in_whatsapp' => true,
+                'source' => 'whatsapp_inbound',
+            ], fn ($v) => $v !== null && $v !== ''));
+        } else {
+            $contact = Contact::where('workspace_id', $workspaceId)
+                ->where('custom_fields->whatsapp_jid', $jid)
+                ->first();
+
+            if (! $contact) {
+                $contact = Contact::create([
+                    'workspace_id' => $workspaceId,
+                    'first_name' => $parsed['display_name'] ?? 'WhatsApp',
+                    'opt_in_whatsapp' => true,
+                    'source' => 'whatsapp_inbound',
+                    'custom_fields' => ['whatsapp_jid' => $jid],
+                ]);
+            } elseif ($parsed['display_name'] && ! trim($contact->first_name ?? '')) {
+                $contact->update(['first_name' => $parsed['display_name']]);
+            }
+        }
 
         $conversation = Conversation::firstOrCreate(
-            ['workspace_id' => $workspaceId, 'contact_id' => $contact->id, 'channel_account_id' => $account->id],
-            ['status' => 'open', 'external_thread_id' => $fromDigits],
+            [
+                'workspace_id' => $workspaceId,
+                'channel_account_id' => $account->id,
+                'external_thread_id' => $jid,
+            ],
+            [
+                'contact_id' => $contact->id,
+                'status' => 'open',
+            ],
         );
+
+        if ((int) $conversation->contact_id !== (int) $contact->id) {
+            $conversation->update(['contact_id' => $contact->id]);
+        }
 
         $type = $this->mapWppType((string) ($event['type'] ?? 'chat'));
         $body = $this->wppBody($event, $type);
+
+        if ($type === 'unsupported' && $body !== '') {
+            $type = 'text';
+        }
 
         $message = Message::create([
             'conversation_id' => $conversation->id,
@@ -294,15 +360,17 @@ class WhatsappDriver implements ChannelDriverInterface
     /** Map a WPPConnect message type to our internal Message.type set. */
     private function mapWppType(string $type): string
     {
-        return match (strtolower($type)) {
-            'chat', 'text' => 'text',
-            'image' => 'image',
-            'video' => 'video',
-            'ptt', 'audio' => 'audio',
-            'document' => 'document',
+        $type = strtolower(trim($type));
+
+        return match ($type) {
+            'chat', 'text', 'conversation', '' => 'text',
+            'image', 'image/jpeg', 'image/png' => 'image',
+            'video', 'video/mp4' => 'video',
+            'ptt', 'audio', 'audio/ogg', 'audio/mpeg' => 'audio',
+            'document', 'application/pdf' => 'document',
             'location' => 'location',
-            'sticker' => 'sticker',
-            'vcard', 'multi_vcard' => 'contacts',
+            'sticker', 'webp' => 'sticker',
+            'vcard', 'multi_vcard', 'contact', 'contacts' => 'contacts',
             default => 'unsupported',
         };
     }
@@ -314,11 +382,18 @@ class WhatsappDriver implements ChannelDriverInterface
      */
     private function wppBody(array $event, string $type): string
     {
-        $body = $event['body'] ?? $event['caption'] ?? '';
-        if (is_string($body) && $body !== '' && $type === 'text') {
-            return $body;
+        $body = $event['body']
+            ?? $event['content']
+            ?? (is_array($event['message'] ?? null) ? ($event['message']['body'] ?? $event['message']['content'] ?? null) : null)
+            ?? $event['caption']
+            ?? '';
+
+        if (is_string($body) && $body !== '' && ! $this->looksLikeBase64Media($body)) {
+            if ($type === 'text' || $type === 'unsupported') {
+                return $body;
+            }
         }
-        // For media the "body" is often base64 data — never store that as preview.
+
         $caption = is_string($event['caption'] ?? null) ? $event['caption'] : '';
         if ($caption !== '') {
             return $caption;
@@ -332,9 +407,18 @@ class WhatsappDriver implements ChannelDriverInterface
             'location' => '📍 Location',
             'sticker' => '😊 Sticker',
             'contacts' => '👤 Contact',
-            'text' => is_string($body) ? $body : '',
+            'text' => (is_string($body) && ! $this->looksLikeBase64Media($body)) ? $body : '',
             default => '',
         };
+    }
+
+    private function looksLikeBase64Media(string $value): bool
+    {
+        $trimmed = ltrim($value);
+
+        return str_starts_with($trimmed, '/9j/')
+            || str_starts_with($trimmed, 'iVBOR')
+            || (strlen($trimmed) > 500 && preg_match('/^[A-Za-z0-9+\/=\r\n]+$/', $trimmed) === 1);
     }
 
     /** Extract a stable WhatsApp message id from a WPPConnect id field. */

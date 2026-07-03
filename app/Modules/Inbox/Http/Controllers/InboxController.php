@@ -18,6 +18,7 @@ use App\Modules\Whatsapp\Services\CloudApiClient;
 use App\Notifications\ConversationHandoverNotification;
 use App\Services\StorageManager;
 use App\Support\Demo;
+use App\Support\PhoneNumberNormalizer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -246,7 +247,7 @@ class InboxController extends Controller
             $messageId = $driver->send($message);
             $message->update(['status' => 'sent', 'provider_message_id' => $messageId]);
         } catch (\Throwable $e) {
-            $sendError = $e->getMessage();
+            $sendError = PhoneNumberNormalizer::friendlySendError($e->getMessage());
             Log::error('Inbox reply send failed', [
                 'conversation_id' => $conversation->id,
                 'channel' => $channel,
@@ -349,7 +350,7 @@ class InboxController extends Controller
             $messageId = $this->channelManager->driver($channel)->send($message);
             $message->update(['status' => 'sent', 'provider_message_id' => $messageId]);
         } catch (\Throwable $e) {
-            $sendError = $e->getMessage();
+            $sendError = PhoneNumberNormalizer::friendlySendError($e->getMessage());
             Log::error('Inbox shareProduct send failed', [
                 'conversation_id' => $conversation->id,
                 'channel' => $channel,
